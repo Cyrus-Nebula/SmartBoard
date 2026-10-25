@@ -1,0 +1,50 @@
+# 智学白板 SmartBoard
+
+基于 **PySide6** 的多功能教学白板（智学白板）。支持手写笔迹平滑、橡皮擦、
+撤销/重做、清空、白板文件保存与载入。
+
+## 兼容目标
+
+- Python 3.7+
+- PySide6 6.2.4+
+
+## 安装
+
+```bash
+pip install -r requirements.txt
+```
+
+## 运行
+
+```bash
+python main.py
+```
+
+## 功能
+
+- **平滑书写**：采用「中点 + 二次贝塞尔」算法对手写采样点做平滑，笔迹自然圆滑。
+- **调色板与线宽**：6 色调色板 + 1–40px 可调线宽。
+- **橡皮擦**：以背景色覆盖方式擦除（像素橡皮）。
+- **撤销 / 重做 / 清空**：完整的笔迹编辑栈，工具栏按钮随场景状态自动启用/禁用。
+- **保存 / 载入**：白板以 JSON 格式序列化，便于分发与二次处理。
+- **画笔状态可视化**：当前激活颜色高亮，橡皮擦激活时颜色按钮自动降亮。
+
+## 测试
+
+无界面（offscreen）冒烟与单元测试：
+
+```bash
+QT_QPA_PLATFORM=offscreen python3.11 tests/test_smoke.py
+```
+
+## 项目结构
+
+```
+main.py                  启动入口
+smartboard/
+  app.py                 应用入口（QApplication + MainWindow）
+  main_window.py         主窗口与工具栏（状态联动）
+  view.py                白板视图（鼠标交互 + 实时预览）
+  whiteboard.py          核心：Stroke 数据模型、WhiteboardScene、路径平滑
+tests/test_smoke.py      headless 测试套件
+```
