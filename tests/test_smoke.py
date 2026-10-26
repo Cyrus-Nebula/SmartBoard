@@ -246,5 +246,113 @@ class ToolbarStateTest(unittest.TestCase):
         win.close()
 
 
+class ShortcutTest(unittest.TestCase):
+    """验证键盘快捷键已注册且正确绑定到撤销/重做/清空/橡皮擦等操作。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _win(self):
+        self._app()
+        return MainWindow()
+
+    def test_shortcuts_registered(self):
+        """核心操作都应有对应快捷键，且 key 序列正确。"""
+        from PySide6.QtGui import QShortcut
+        win = self._win()
+        registered = {sc.key().toString() for sc in win.findChildren(QShortcut)}
+        expected = {"Ctrl+Z", "Ctrl+Shift+Z", "Ctrl+Y", "Ctrl+L", "E",
+                    "Ctrl+S", "Ctrl+O"}
+        self.assertTrue(expected.issubset(registered),
+                        "缺少快捷键: %s" % (expected - registered))
+        win.close()
+
+    def test_undo_redo_shortcut_triggers(self):
+        """发射 Ctrl+Z / 重做 快捷键信号，确定性验证其确实调用了对应操作。"""
+        from PySide6.QtGui import QShortcut
+        win = self._win()
+        scene = win.board.scene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        self.assertEqual(scene.count(), 1)
+
+        undo_sc = next(s for s in win.findChildren(QShortcut)
+                       if s.key().toString() == "Ctrl+Z")
+        undo_sc.activated.emit()
+        self.assertEqual(scene.count(), 0)
+        self.assertTrue(scene.can_redo())
+
+        redo_sc = next(s for s in win.findChildren(QShortcut)
+                       if s.key().toString() in ("Ctrl+Shift+Z", "Ctrl+Y"))
+        redo_sc.activated.emit()
+        self.assertEqual(scene.count(), 1)
+        self.assertFalse(scene.can_redo())
+        win.close()
+
+    def test_clear_and_eraser_shortcuts(self):
+        """Ctrl+L 清空、E 切换橡皮擦，发射信号验证绑定正确。"""
+        from PySide6.QtGui import QShortcut
+        win = self._win()
+        scene = win.board.scene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        self.assertTrue(win._clear_act.isEnabled())
+
+        clear_sc = next(s for s in win.findChildren(QShortcut)
+                        if s.key().toString() == "Ctrl+L")
+        clear_sc.activated.emit()
+        self.assertEqual(scene.count(), 0)
+        self.assertFalse(win._clear_act.isEnabled())
+
+        # 橡皮快捷键应翻转 eraser 状态（关闭->开启->关闭）
+        self.assertFalse(win.board.eraser)
+        eraser_sc = next(s for s in win.findChildren(QShortcut)
+                         if s.key().toString() == "E")
+        eraser_sc.activated.emit()
+        self.assertTrue(win.board.eraser)
+        eraser_sc.activated.emit()
+        self.assertFalse(win.board.eraser)
+        win.close()
+
+    def test_real_key_events_route_to_shortcuts(self):
+        """端到端：真实键盘事件（QTest）应触发撤销/重做/橡皮/清空。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QApplication
+
+        win = self._win()
+        win.show()
+        app = QApplication.instance()
+        app.setActiveWindow(win)
+        win.activateWindow()
+        win.raise_()
+
+        scene = win.board.scene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        self.assertEqual(scene.count(), 1)
+
+        # Ctrl+Z -> 撤销
+        QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier)
+        app.processEvents()
+        self.assertEqual(scene.count(), 0)
+        self.assertTrue(scene.can_redo())
+
+        # Ctrl+Shift+Z -> 重做
+        QTest.keyClick(win, Qt.Key_Z, Qt.ControlModifier | Qt.ShiftModifier)
+        app.processEvents()
+        self.assertEqual(scene.count(), 1)
+
+        # E -> 切换橡皮擦
+        QTest.keyClick(win, Qt.Key_E)
+        app.processEvents()
+        self.assertTrue(win.board.eraser)
+
+        # Ctrl+L -> 清空
+        QTest.keyClick(win, Qt.Key_L, Qt.ControlModifier)
+        app.processEvents()
+        self.assertEqual(scene.count(), 0)
+        win.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -7,7 +7,7 @@ import json
 import os
 
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QColor, QAction
+from PySide6.QtGui import QColor, QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMainWindow, QToolBar, QPushButton, QSlider, QFileDialog, QMessageBox, QWidget,
 )
@@ -32,6 +32,7 @@ class MainWindow(QMainWindow):
         self._color_buttons = {}   # hex -> QPushButton
 
         self._build_toolbar()
+        self._install_shortcuts()
 
         # 工具栏状态联动：场景笔迹变化时刷新撤销/重做/清空按钮可用态
         self.board.scene().strokesChanged.connect(self._refresh_actions)
@@ -100,6 +101,29 @@ class MainWindow(QMainWindow):
         act.triggered.connect(slot)
         tb.addAction(act)
         return act
+
+    # -- 键盘快捷键 --
+    def _install_shortcuts(self):
+        """为常用操作绑定键盘快捷键，提升白板书写与编辑效率。
+
+        仅使用 Qt 6.2.4 已具备的 QShortcut / QKeySequence 公共 API，
+        兼容 Python 3.7。快捷键全部挂在主窗口（WindowShortcut 上下文），
+        不影响既有工具栏按钮与鼠标书写流程。
+        """
+        def add(key, slot):
+            sc = QShortcut(QKeySequence(key), self)
+            sc.setContext(Qt.WindowShortcut)
+            sc.activated.connect(slot)
+            return sc
+
+        scene = self.board.scene()
+        add("Ctrl+Z", scene.undo)                       # 撤销
+        add("Ctrl+Shift+Z", scene.redo)                 # 重做（Mac/通用）
+        add("Ctrl+Y", scene.redo)                       # 重做（Windows 习惯）
+        add("Ctrl+L", self._clear)                      # 清空
+        add("E", lambda: self._toggle_eraser(not self.board.eraser))  # 橡皮擦开关
+        add("Ctrl+S", self._save)                       # 保存
+        add("Ctrl+O", self._load)                       # 载入
 
     # -- 状态联动 --
     def _refresh_color_buttons(self):
