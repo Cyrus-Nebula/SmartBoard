@@ -105,6 +105,7 @@ class WhiteboardScene(QGraphicsScene):
         self._strokes = []                 # 已提交笔迹（绘制顺序）
         self._items = {}                   # Stroke -> QGraphicsPathItem
         self._redo = []                    # 撤销栈
+        self._z_counter = 0                # 单调递增 z 计数器（决定层叠顺序）
 
     # -- 公开访问器（便于测试与外部读取）--
     def count(self):
@@ -123,7 +124,13 @@ class WhiteboardScene(QGraphicsScene):
         pen_color = self._bg if stroke.eraser else stroke.color
         pen = QPen(pen_color, stroke.width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
         item.setPen(pen)
-        item.setZValue(1 if not stroke.eraser else 2)
+        # 按「绘制顺序」分配单调递增 z：橡皮擦与普通笔迹一视同仁。
+        # 这样橡皮只遮住它“之前”绘制的笔迹，而不会压住“之后”新画的笔迹，
+        # 修复旧实现固定 eraser z=2 导致后画笔迹被橡皮区域遮挡的缺陷。
+        if getattr(stroke, "_z", None) is None:
+            stroke._z = self._z_counter
+            self._z_counter += 1
+        item.setZValue(stroke._z)
         self.addItem(item)
         self._strokes.append(stroke)
         self._items[stroke] = item
@@ -158,6 +165,7 @@ class WhiteboardScene(QGraphicsScene):
         self._strokes = []
         self._items = {}
         self._redo = []
+        self._z_counter = 0
         self.strokesChanged.emit()
 
     # -- 序列化 --

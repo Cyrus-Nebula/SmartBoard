@@ -354,5 +354,63 @@ class ShortcutTest(unittest.TestCase):
         win.close()
 
 
+class ZOrderTest(unittest.TestCase):
+    """验证「绘制顺序决定层叠」，修复橡皮擦遮挡后画笔迹的缺陷。"""
+
+    @staticmethod
+    def _z(scene, stroke):
+        return scene._items[stroke].zValue()
+
+    def test_z_increases_with_draw_order(self):
+        """每新增一笔 z 单调递增（橡皮与普通笔迹一视同仁）。"""
+        scene = WhiteboardScene()
+        a = Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)])
+        b = Stroke(QColor("red"), 4, [QPointF(0, 0), QPointF(6, 6)])
+        scene.add_stroke(a)
+        scene.add_stroke(b)
+        self.assertEqual(self._z(scene, a), 0)
+        self.assertEqual(self._z(scene, b), 1)
+        self.assertLess(self._z(scene, a), self._z(scene, b))
+
+    def test_eraser_stacks_between_normal_strokes(self):
+        """回归：橡皮只压住它之前的笔迹；后画的笔迹应位于橡皮之上。"""
+        scene = WhiteboardScene()
+        before = Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(50, 50)])
+        eraser = Stroke(QColor("black"), 20,
+                        [QPointF(10, 10), QPointF(40, 40)], eraser=True)
+        after = Stroke(QColor("red"), 4, [QPointF(0, 0), QPointF(45, 45)])
+        scene.add_stroke(before)
+        scene.add_stroke(eraser)
+        scene.add_stroke(after)
+
+        zb = self._z(scene, before)
+        ze = self._z(scene, eraser)
+        za = self._z(scene, after)
+        self.assertLess(zb, ze)   # 橡皮遮住“之前”的笔迹（擦除生效）
+        self.assertLess(ze, za)   # 橡皮不再遮住“之后”新画的笔迹（修复点）
+        self.assertEqual(scene.count(), 3)
+
+    def test_undo_redo_preserves_z(self):
+        """撤销后重做，笔迹以原始 z 回到原绘制位置。"""
+        scene = WhiteboardScene()
+        s = Stroke(QColor("blue"), 4, [QPointF(0, 0), QPointF(5, 5)])
+        scene.add_stroke(s)
+        z0 = self._z(scene, s)
+        self.assertTrue(scene.undo())
+        self.assertTrue(scene.redo())
+        self.assertEqual(self._z(scene, s), z0)
+        self.assertEqual(scene.count(), 1)
+
+    def test_clear_resets_z_counter(self):
+        """清空后 z 计数归零，新笔迹从 0 开始。"""
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0)]))
+        scene.add_stroke(Stroke(QColor("red"), 4, [QPointF(1, 1)]))
+        scene.clear_all()
+        s = Stroke(QColor("green"), 4, [QPointF(0, 0)])
+        scene.add_stroke(s)
+        self.assertEqual(self._z(scene, s), 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
