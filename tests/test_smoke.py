@@ -412,5 +412,92 @@ class ZOrderTest(unittest.TestCase):
         self.assertEqual(self._z(scene, s), 0)
 
 
+class ObjectEraserTest(unittest.TestCase):
+    """右键精确擦除：删除光标下整条笔迹，且可被重做恢复。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_remove_stroke_by_reference(self):
+        scene = WhiteboardScene()
+        a = Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)])
+        b = Stroke(QColor("red"), 4, [QPointF(10, 0), QPointF(15, 5)])
+        scene.add_stroke(a)
+        scene.add_stroke(b)
+        self.assertEqual(scene.count(), 2)
+
+        self.assertTrue(scene.remove_stroke(a))
+        self.assertEqual(scene.count(), 1)
+        self.assertIn(b, scene._strokes)
+        self.assertNotIn(a, scene._strokes)
+
+        # 被删除的笔迹进入重做栈，可恢复
+        self.assertTrue(scene.can_redo())
+        self.assertTrue(scene.redo())
+        self.assertEqual(scene.count(), 2)
+        self.assertIn(a, scene._strokes)
+
+    def test_remove_stroke_cleans_item_and_maps(self):
+        scene = WhiteboardScene()
+        s = Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)])
+        scene.add_stroke(s)
+        item = scene._items[s]
+        self.assertEqual(len(scene.items()), 1)
+
+        scene.remove_stroke(s)
+        self.assertEqual(scene.count(), 0)
+        self.assertEqual(len(scene.items()), 0)
+        self.assertNotIn(s, scene._items)
+        self.assertNotIn(item, scene._stroke_of)
+
+    def test_erase_stroke_at_scene(self):
+        self._app()
+        view = WhiteboardView()
+        view.resize(400, 300)
+        view.show()
+        view.centerOn(QPointF(0, 0))
+        view.scene().add_stroke(
+            Stroke(QColor("black"), 6, [QPointF(0, 0), QPointF(10, 10), QPointF(0, 10)])
+        )
+        self.assertEqual(view.scene().count(), 1)
+
+        # 命中笔迹中段 -> 删除
+        self.assertTrue(view._erase_stroke_at_scene(QPointF(5, 5)))
+        self.assertEqual(view.scene().count(), 0)
+
+        # 空白区域 -> 无操作、返回 False
+        self.assertFalse(view._erase_stroke_at_scene(QPointF(9999, 9999)))
+
+    def test_right_click_deletes_stroke(self):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        self._app()
+        view = WhiteboardView()
+        view.resize(600, 400)
+        view.show()
+        view.centerOn(QPointF(0, 0))
+        app = self._app()
+        app.processEvents()
+
+        view.scene().add_stroke(
+            Stroke(QColor("black"), 8, [QPointF(0, 0), QPointF(5, 5), QPointF(-5, 5)])
+        )
+        before = view.scene().count()
+        self.assertEqual(before, 1)
+
+        # 视口中心对应场景原点附近 -> 右键整条删除
+        QTest.mouseClick(view.viewport(), Qt.RightButton,
+                         pos=view.viewport().rect().center())
+        app.processEvents()
+        self.assertEqual(view.scene().count(), before - 1)
+        # 删除进入重做栈，可恢复（Ctrl+Shift+Z / Ctrl+Y）
+        self.assertTrue(view.scene().can_redo())
+        self.assertTrue(view.scene().redo())
+        self.assertEqual(view.scene().count(), before)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

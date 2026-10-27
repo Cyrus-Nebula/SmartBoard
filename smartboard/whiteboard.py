@@ -104,6 +104,7 @@ class WhiteboardScene(QGraphicsScene):
         self.setBackgroundBrush(QBrush(self._bg))
         self._strokes = []                 # 已提交笔迹（绘制顺序）
         self._items = {}                   # Stroke -> QGraphicsPathItem
+        self._stroke_of = {}               # QGraphicsPathItem -> Stroke（反向索引）
         self._redo = []                    # 撤销栈
         self._z_counter = 0                # 单调递增 z 计数器（决定层叠顺序）
 
@@ -134,7 +135,15 @@ class WhiteboardScene(QGraphicsScene):
         self.addItem(item)
         self._strokes.append(stroke)
         self._items[stroke] = item
+        self._stroke_of[item] = stroke
         return stroke
+
+    def _detach(self, stroke):
+        """把一条 Stroke 的图元从场景摘下，并清理双向索引。"""
+        item = self._items.pop(stroke, None)
+        if item is not None:
+            self._stroke_of.pop(item, None)
+            self.removeItem(item)
 
     def add_stroke(self, stroke):
         """提交一条新笔迹；任何新操作都会清空重做栈。"""
@@ -147,8 +156,22 @@ class WhiteboardScene(QGraphicsScene):
         if not self._strokes:
             return False
         s = self._strokes.pop()
-        self.removeItem(self._items.pop(s))
+        self._detach(s)
         self._redo.append(s)
+        self.strokesChanged.emit()
+        return True
+
+    def remove_stroke(self, stroke):
+        """删除指定笔迹（整条移除），可用于右键精确擦除。
+
+        被删笔迹进入重做栈，因此可用 Ctrl+Shift+Z / Ctrl+Y 恢复，
+        契合「书写纠错」场景。新绘制会像往常一样清空重做栈。
+        """
+        if stroke not in self._strokes:
+            return False
+        self._strokes.remove(stroke)
+        self._detach(stroke)
+        self._redo.append(stroke)
         self.strokesChanged.emit()
         return True
 
@@ -164,6 +187,7 @@ class WhiteboardScene(QGraphicsScene):
         self.clear()
         self._strokes = []
         self._items = {}
+        self._stroke_of = {}
         self._redo = []
         self._z_counter = 0
         self.strokesChanged.emit()

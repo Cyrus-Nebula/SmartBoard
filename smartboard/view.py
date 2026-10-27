@@ -24,6 +24,8 @@ class WhiteboardView(QGraphicsView):
         self.setRenderHint(QPainter.SmoothPixmapTransform)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        # 右键用于「精确擦除」，关闭默认右键菜单避免误弹
+        self.setContextMenuPolicy(Qt.NoContextMenu)
         # 给一个足够大的画布，避免默认场景矩形过小
         self.setSceneRect(-2000, -2000, 4000, 4000)
         self.setBackgroundBrush(self.scene().backgroundBrush())
@@ -49,6 +51,11 @@ class WhiteboardView(QGraphicsView):
 
     # -- 鼠标事件 --
     def mousePressEvent(self, event):
+        if event.button() == Qt.RightButton:
+            # 右键：精确擦除光标下的整条笔迹（独立于当前画笔/橡皮工具）
+            if not self._drawing:
+                self._erase_stroke_at(event.pos())
+            return
         if event.button() == Qt.LeftButton:
             self._drawing = True
             pos = self.mapToScene(event.pos())
@@ -74,6 +81,20 @@ class WhiteboardView(QGraphicsView):
                 self.scene().add_stroke(self._current)
             self._current = None
         super(WhiteboardView, self).mouseReleaseEvent(event)
+
+    # -- 精确擦除（右键删除整条笔迹）--
+    def _erase_stroke_at(self, screen_pos):
+        self._erase_stroke_at_scene(self.mapToScene(screen_pos))
+
+    def _erase_stroke_at_scene(self, scene_pos):
+        """删除场景坐标命中的整条笔迹；命中空白处则无操作。"""
+        item = self.scene().itemAt(scene_pos, self.transform())
+        if item is None or item is self._preview:
+            return False
+        stroke = self.scene()._stroke_of.get(item)
+        if stroke is None:
+            return False
+        return self.scene().remove_stroke(stroke)
 
     # -- 预览管理 --
     def _preview_pen(self):

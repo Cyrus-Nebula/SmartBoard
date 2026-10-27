@@ -25,6 +25,7 @@ class MainWindow(QMainWindow):
         self.resize(1000, 700)
 
         self.board = WhiteboardView(WhiteboardScene(), self)
+        self.board.setToolTip("左键书写 · 右键删除笔迹 · E 切换橡皮擦 · Ctrl+Z 撤销")
         self.setCentralWidget(self.board)
 
         # 当前激活画笔颜色（用于工具栏高亮），默认取调色板第一色
@@ -76,6 +77,7 @@ class MainWindow(QMainWindow):
         # 橡皮擦
         self._eraser_act = self._add_action(tb, "橡皮擦", self._toggle_eraser)
         self._eraser_act.setCheckable(True)
+        self._eraser_act.setToolTip("橡皮擦：以背景色覆盖擦除；右键点击任意笔迹可整条删除")
 
         tb.addSeparator()
 
