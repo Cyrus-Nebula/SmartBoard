@@ -26,6 +26,55 @@ def build_polyline(points):
     return path
 
 
+# 提交笔迹时抽稀的默认容差（像素）。RDP 会保留所有偏离首尾连线超过该值的顶点，
+# 视觉上与原笔迹几乎无差别，但能显著减少存储点数与渲染/载入开销。
+SIMPLIFY_EPSILON = 1.5
+
+
+def _perp_distance(point, a, b):
+    """点 point 到线段 a→b 的垂直距离；a==b（零长线段）时退化为到点的距离。
+
+    纯 Python 实现，不依赖 numpy，兼容 Python 3.7。
+    """
+    dx = b.x() - a.x()
+    dy = b.y() - a.y()
+    norm = (dx * dx + dy * dy) ** 0.5
+    if norm == 0.0:
+        return ((point.x() - a.x()) ** 2 + (point.y() - a.y()) ** 2) ** 0.5
+    # 点到直线距离公式（线段端点已知，标准 RDP 假设点落在线段投影范围内）
+    return abs(dy * point.x() - dx * point.y() + b.x() * a.y() - b.y() * a.x()) / norm
+
+
+def simplify_points(points, epsilon=SIMPLIFY_EPSILON):
+    """用 Ramer–Douglas–Peucker 算法对采样点做抽稀，保留轮廓关键顶点。
+
+    - 端点必然保留，保证笔迹首尾位置不变。
+    - 递归拆分的迭代实现，避免深曲线导致 Python 递归深度超限。
+    - 点数 <= 2 或 epsilon <= 0 时直接返回副本（不抽稀），保证安全与确定性。
+    返回新的 QPointF 列表，不修改入参。
+    """
+    if epsilon <= 0 or len(points) <= 2:
+        return [QPointF(p) for p in points]
+
+    pts = [QPointF(p) for p in points]
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        start, end = stack.pop()
+        a, b = pts[start], pts[end]
+        dmax, index = 0.0, -1
+        for i in range(start + 1, end):
+            d = _perp_distance(pts[i], a, b)
+            if d > dmax:
+                dmax, index = d, i
+        if dmax > epsilon and index != -1:
+            keep[index] = True
+            stack.append((start, index))
+            stack.append((index, end))
+    return [p for i, p in enumerate(pts) if keep[i]]
+
+
 def build_smooth_path(points):
     """用「中点 + 二次贝塞尔」对采样点做平滑，得到自然的书写笔迹。
 

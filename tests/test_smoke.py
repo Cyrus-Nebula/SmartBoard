@@ -6,6 +6,7 @@
 import os
 import sys
 import json
+import math
 import unittest
 
 # 必须在 import PySide6 之前设定 offscreen 平台
@@ -15,15 +16,25 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import QPointF  # noqa: E402
 from PySide6.QtGui import QColor  # noqa: E402
+from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from smartboard.whiteboard import (  # noqa: E402
     Stroke,
     WhiteboardScene,
     build_polyline,
     build_smooth_path,
+    simplify_points,
+    SIMPLIFY_EPSILON,
+    _perp_distance,
 )
 from smartboard.view import WhiteboardView  # noqa: E402
 from smartboard.main_window import MainWindow, _PALETTE  # noqa: E402
+
+# 保证整个测试过程存在唯一的 QApplication 实例。
+# 本环境（PySide6 6.12 + offscreen）下，构造 QGraphicsScene 必须先有 QApplication，
+# 否则会段错误。统一在模块加载时创建一次，既修复既有用例，也覆盖新增用例，
+# 不改变任何被测行为。
+_QAPP = QApplication.instance() or QApplication([])
 
 
 def path_max_y(path):
@@ -497,6 +508,102 @@ class ObjectEraserTest(unittest.TestCase):
         self.assertTrue(view.scene().can_redo())
         self.assertTrue(view.scene().redo())
         self.assertEqual(view.scene().count(), before)
+
+
+class SimplificationTest(unittest.TestCase):
+    """验证提交笔迹时的 RDP 抽稀：减小存储/渲染开销，且视觉偏差受控。
+
+    关键不变量：被抽掉的原采样点到简化后折线的距离均不超过 epsilon。
+    """
+
+    @staticmethod
+    def _point_to_polyline_max_dev(orig, simplified):
+        """原折线所有点到简化后折线的最大距离（RDP 保证 <= epsilon）。"""
+        # 把简化点序列视为折线，计算每段对原点的距离上限
+        s = simplified
+        if len(s) < 2:
+            # 退化：简化为单点，偏差即到该点的最大距离
+            return max(((p.x() - s[0].x()) ** 2 + (p.y() - s[0].y()) ** 2) ** 0.5
+                       for p in orig)
+        worst = 0.0
+        for p in orig:
+            seg_min = min(_perp_distance(p, s[i], s[i + 1])
+                          for i in range(len(s) - 1))
+            worst = max(worst, seg_min)
+        return worst
+
+    def test_collapses_straight_line(self):
+        """近共线长线应被抽稀到仅首尾两点。"""
+        pts = [QPointF(x, 0.0) for x in range(0, 500)]
+        s = simplify_points(pts, 1.0)
+        self.assertEqual(len(s), 2)
+        self.assertAlmostEqual(s[0].x(), 0.0)
+        self.assertAlmostEqual(s[-1].x(), 499.0)
+
+    def test_preserves_sharp_corner(self):
+        """直角拐点必须被保留（不能把拐角抹平）。"""
+        pts = ([QPointF(x, 0.0) for x in range(0, 100)]
+               + [QPointF(99.0, y) for y in range(1, 100)])
+        s = simplify_points(pts, 1.0)
+        self.assertGreaterEqual(len(s), 3)
+        has_corner = any(abs(p.x() - 99.0) < 1e-6 and abs(p.y()) < 1e-6 for p in s)
+        self.assertTrue(has_corner, "拐点 (99,0) 丢失")
+
+    def test_max_deviation_within_epsilon(self):
+        """正弦曲线：抽稀后最大偏差不超过 epsilon，且点数明显减少。"""
+        pts = [QPointF(i, 50.0 * math.sin(i / 5.0)) for i in range(200)]
+        eps = 2.0
+        s = simplify_points(pts, eps)
+        self.assertLess(len(s), len(pts))
+        self.assertLessEqual(
+            self._point_to_polyline_max_dev(pts, s), eps + 1e-6
+        )
+
+    def test_endpoints_always_kept(self):
+        """任意输入端点必保留，避免笔迹首尾错位。"""
+        random_pts = [QPointF(math.cos(i), math.sin(i * 1.3)) for i in range(50)]
+        s = simplify_points(random_pts, 1.0)
+        self.assertAlmostEqual(s[0].x(), random_pts[0].x())
+        self.assertAlmostEqual(s[0].y(), random_pts[0].y())
+        self.assertAlmostEqual(s[-1].x(), random_pts[-1].x())
+        self.assertAlmostEqual(s[-1].y(), random_pts[-1].y())
+
+    def test_small_input_not_simplified(self):
+        """点数 <= 2 或 epsilon <= 0 时不抽稀，原样返回。"""
+        two = [QPointF(0, 0), QPointF(10, 10)]
+        self.assertEqual(len(simplify_points(two, 5.0)), 2)
+        long_pts = [QPointF(x, 0.0) for x in range(0, 100)]
+        self.assertEqual(len(simplify_points(long_pts, 0.0)), len(long_pts))
+
+    def test_view_commit_simplifies(self):
+        """视图提交路径确实使用抽稀：长直线笔迹提交后仅剩首尾两点。"""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication([])
+        view = WhiteboardView()
+        view.simplify_epsilon = 1.0
+        view._current = Stroke(
+            QColor("#1A1A1A"), 4,
+            [QPointF(x, 0.0) for x in range(0, 300)], eraser=False,
+        )
+        before = view.scene().count()
+        view._commit_current()
+        self.assertEqual(view.scene().count(), before + 1)
+        committed = view.scene()._strokes[-1]
+        self.assertEqual(len(committed.points), 2)  # 抽稀为端点
+
+    def test_view_commit_keeps_short_stroke(self):
+        """短笔迹（< 3 点）不受抽稀影响，正常提交。"""
+        from PySide6.QtWidgets import QApplication
+        QApplication.instance() or QApplication([])
+        view = WhiteboardView()
+        view._current = Stroke(QColor("#1A1A1A"), 4,
+                               [QPointF(0, 0), QPointF(5, 5)], eraser=False)
+        view._commit_current()
+        self.assertEqual(view.scene().count(), 1)
+        self.assertEqual(len(view.scene()._strokes[-1].points), 2)
+
+    def test_simplify_epsilon_default(self):
+        self.assertGreater(SIMPLIFY_EPSILON, 0)
 
 
 if __name__ == "__main__":

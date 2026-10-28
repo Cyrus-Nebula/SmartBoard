@@ -7,7 +7,7 @@ from PySide6.QtCore import Qt, QPointF
 from PySide6.QtGui import QColor, QPen, QPainter
 from PySide6.QtWidgets import QGraphicsView, QGraphicsPathItem
 
-from .whiteboard import Stroke, WhiteboardScene
+from .whiteboard import Stroke, WhiteboardScene, simplify_points, SIMPLIFY_EPSILON
 
 
 class WhiteboardView(QGraphicsView):
@@ -33,6 +33,10 @@ class WhiteboardView(QGraphicsView):
         self.pen_color = QColor("#1A1A1A")
         self.pen_width = 4
         self.eraser = False
+
+        # 提交笔迹时的抽稀容差（像素）；设为 0 可关闭抽稀。
+        # 默认沿用手写采样 1px 量级，保证视觉一致的前提下减少存储与渲染开销。
+        self.simplify_epsilon = SIMPLIFY_EPSILON
 
         self._drawing = False
         self._current = None     # 正在绘制的 Stroke
@@ -77,10 +81,24 @@ class WhiteboardView(QGraphicsView):
         if self._drawing and event.button() == Qt.LeftButton:
             self._drawing = False
             self._finish_preview()
-            if self._current is not None and len(self._current.points) >= 1:
-                self.scene().add_stroke(self._current)
-            self._current = None
+            self._commit_current()
         super(WhiteboardView, self).mouseReleaseEvent(event)
+
+    def _commit_current(self):
+        """抬起笔时：把当前笔迹抽稀（减小存储）后提交到场景。
+
+        抽稀仅作用于提交给场景/序列化的点序列，预览阶段仍使用完整采样点，
+        因此书写手感不变，成品笔迹在 epsilon 容差内与原轨迹视觉一致。
+        """
+        if self._current is None:
+            return
+        if len(self._current.points) >= 3 and self.simplify_epsilon > 0:
+            self._current.points = simplify_points(
+                self._current.points, self.simplify_epsilon
+            )
+        if len(self._current.points) >= 1:
+            self.scene().add_stroke(self._current)
+        self._current = None
 
     # -- 精确擦除（右键删除整条笔迹）--
     def _erase_stroke_at(self, screen_pos):
