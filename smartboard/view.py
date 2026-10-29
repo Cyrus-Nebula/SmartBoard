@@ -1,10 +1,12 @@
-"""智学白板 SmartBoard —— 白板视图（鼠标交互 + 实时预览）。
+"""智学白板 SmartBoard —— 白板视图（鼠标交互 + 实时预览 + 图片导出）。
 
 兼容目标：Python 3.7 / PySide6 6.2.4。
 """
 
-from PySide6.QtCore import Qt, QPointF
-from PySide6.QtGui import QColor, QPen, QPainter
+import math
+
+from PySide6.QtCore import Qt, QPointF, QRectF
+from PySide6.QtGui import QColor, QPen, QPainter, QPixmap
 from PySide6.QtWidgets import QGraphicsView, QGraphicsPathItem
 
 from .whiteboard import Stroke, WhiteboardScene, simplify_points, SIMPLIFY_EPSILON
@@ -138,3 +140,40 @@ class WhiteboardView(QGraphicsView):
         if self._preview is not None:
             self.scene().removeItem(self._preview)
             self._preview = None
+
+    # -- 图片导出 --
+    def content_rect(self, padding=24.0):
+        """返回刚好包围所有笔迹的内容矩形（含 padding 留白）。
+
+        无笔迹时回退到一个默认画布，避免导出一张 4000×4000 的巨幅空白图。
+        """
+        if self.scene().count() == 0:
+            return QRectF(-100.0, -100.0, 200.0, 200.0)
+        return self.scene().itemsBoundingRect().adjusted(
+            -padding, -padding, padding, padding
+        )
+
+    def export_image(self, path, fmt="PNG"):
+        """将当前白板渲染为图片并保存到 path，返回是否保存成功。
+
+        设计要点（均只使用 PySide6 6.2.4 已具备的 QPixmap/QPainter/Scene.render）：
+        - 仅渲染「笔迹内容区域 + 留白」，而非默认 4000×4000 巨幅画布，文件体积可控；
+        - 先以场景背景色填充整张图，再渲染笔迹（平滑路径），保证所见即所得；
+        - 采用 IgnoreAspectRatio，规避尺寸取整带来的轻微比例偏差导致留白不均。
+        """
+        rect = self.content_rect()
+        width = max(1, int(math.ceil(rect.width())))
+        height = max(1, int(math.ceil(rect.height())))
+
+        pixmap = QPixmap(width, height)
+        bg = self.scene().backgroundBrush().color()
+        pixmap.fill(bg)
+
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setRenderHint(QPainter.SmoothPixmapTransform)
+        target = QRectF(0.0, 0.0, float(width), float(height))
+        self.scene().render(painter, target, rect, Qt.IgnoreAspectRatio)
+        painter.end()
+
+        return pixmap.save(path, fmt)

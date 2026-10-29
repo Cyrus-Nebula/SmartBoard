@@ -88,9 +88,10 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
-        # 保存 / 载入
+        # 保存 / 载入 / 导出图片
         self._add_action(tb, "保存", self._save)
         self._add_action(tb, "载入", self._load)
+        self._add_action(tb, "导出图片", self._export)
 
     def _label(self, text):
         from PySide6.QtWidgets import QLabel
@@ -191,3 +192,20 @@ class MainWindow(QMainWindow):
             self.board.scene().load_dict(data)
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "载入失败", str(e))
+
+    def _export(self):
+        """将当前白板导出为 PNG 图片（供课堂分享 / 留存）。"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出白板图片", os.path.expanduser("~"), "PNG 图片 (*.png)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".png"):
+            path += ".png"
+        try:
+            ok = self.board.export_image(path, "PNG")
+        except Exception as e:  # noqa: BLE001 —— 捕获渲染/保存过程中的任何异常并提示
+            QMessageBox.warning(self, "导出失败", str(e))
+            return
+        if not ok:
+            QMessageBox.warning(self, "导出失败", "图片保存失败，请检查路径与权限。")

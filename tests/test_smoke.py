@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import math
+import tempfile
 import unittest
 
 # 必须在 import PySide6 之前设定 offscreen 平台
@@ -15,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import QPointF  # noqa: E402
-from PySide6.QtGui import QColor  # noqa: E402
+from PySide6.QtGui import QColor, QImage  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from smartboard.whiteboard import (  # noqa: E402
@@ -604,6 +605,86 @@ class SimplificationTest(unittest.TestCase):
 
     def test_simplify_epsilon_default(self):
         self.assertGreater(SIMPLIFY_EPSILON, 0)
+
+
+class ExportImageTest(unittest.TestCase):
+    """验证「导出为图片」：仅渲染笔迹内容区域，所见即所得，headless 可验证。
+
+    覆盖：导出成功、生成合法 PNG、尺寸贴合内容区、笔迹与背景均正确呈现。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _tmp_png():
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        return path
+
+    def test_export_empty_scene_valid_png(self):
+        """空场景导出应生成合法的 200×200 PNG（回退默认画布）。"""
+        self._app()
+        view = WhiteboardView()
+        path = self._tmp_png()
+        try:
+            self.assertTrue(view.export_image(path, "PNG"))
+            self.assertGreater(os.path.getsize(path), 0)
+            with open(path, "rb") as f:
+                magic = f.read(8)
+            self.assertEqual(magic, b"\x89PNG\r\n\x1a\n")
+            img = QImage(path)
+            self.assertEqual(img.width(), 200)
+            self.assertEqual(img.height(), 200)
+        finally:
+            os.remove(path)
+
+    def test_export_size_matches_content_rect(self):
+        """导出图片尺寸应与内容矩形（含留白）严格一致。"""
+        self._app()
+        view = WhiteboardView()
+        view.scene().add_stroke(
+            Stroke(QColor("#1A1A1A"), 4, [QPointF(0, 0), QPointF(100, 50)])
+        )
+        rect = view.content_rect()
+        expected_w = max(1, int(math.ceil(rect.width())))
+        expected_h = max(1, int(math.ceil(rect.height())))
+        path = self._tmp_png()
+        try:
+            self.assertTrue(view.export_image(path, "PNG"))
+            img = QImage(path)
+            self.assertEqual(img.width(), expected_w)
+            self.assertEqual(img.height(), expected_h)
+        finally:
+            os.remove(path)
+
+    def test_export_renders_content_and_background(self):
+        """导出图片应同时包含笔迹像素与背景底色（所见即所得）。"""
+        self._app()
+        view = WhiteboardView()
+        view.scene().add_stroke(
+            Stroke(QColor("#1A1A1A"), 6, [QPointF(0, 0), QPointF(60, 40)])
+        )
+        path = self._tmp_png()
+        try:
+            self.assertTrue(view.export_image(path, "PNG"))
+            img = QImage(path)
+            self.assertGreater(img.width(), 0)
+            self.assertGreater(img.height(), 0)
+
+            bg = view.scene().backgroundBrush().color()
+            non_bg = 0
+            step_x = max(1, img.width() // 20)
+            step_y = max(1, img.height() // 20)
+            for y in range(0, img.height(), step_y):
+                for x in range(0, img.width(), step_x):
+                    if img.pixelColor(x, y) != bg:
+                        non_bg += 1
+            self.assertGreater(non_bg, 0, "导出图片应至少包含一处笔迹像素")
+        finally:
+            os.remove(path)
 
 
 if __name__ == "__main__":
