@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import QPointF  # noqa: E402
-from PySide6.QtGui import QColor, QImage  # noqa: E402
+from PySide6.QtGui import QColor, QImage, QAction  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from smartboard.whiteboard import (  # noqa: E402
@@ -36,6 +36,27 @@ from smartboard.main_window import MainWindow, _PALETTE  # noqa: E402
 # 否则会段错误。统一在模块加载时创建一次，既修复既有用例，也覆盖新增用例，
 # 不改变任何被测行为。
 _QAPP = QApplication.instance() or QApplication([])
+
+# 退出前有序拆除所有顶层 Qt 对象并退出事件循环，规避 PySide6 在解释器终析阶段
+# 偶发的 bool_dealloc 引用计数崩溃（SIGABRT），保证测试退出码为 0、结论干净。
+import atexit
+import gc
+
+
+def _cleanup_qt():
+    app = QApplication.instance()
+    if app is not None:
+        for w in app.topLevelWidgets():
+            try:
+                w.close()
+            except Exception:
+                pass
+        app.processEvents()
+        app.quit()
+    gc.collect()
+
+
+atexit.register(_cleanup_qt)
 
 
 def path_max_y(path):
@@ -687,5 +708,38 @@ class ExportImageTest(unittest.TestCase):
             os.remove(path)
 
 
+class AIToolbarTest(unittest.TestCase):
+    """验证 AI 教学联动入口已接入主窗口（不触发阻塞对话框）。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_ai_action_present(self):
+        self._app()
+        win = MainWindow()
+        actions = {a.text() for a in win.findChildren(QAction)}
+        self.assertIn("AI 答疑", actions)
+        self.assertIsNotNone(win._ai)
+        win.close()
+
+    def test_ai_context_from_live_scene(self):
+        self._app()
+        win = MainWindow()
+        win.board.scene().add_stroke(
+            Stroke(QColor("#1E88E5"), 8, [QPointF(1, 1), QPointF(9, 9)])
+        )
+        from smartboard.ai_link import board_dict_to_text
+        ctx = board_dict_to_text(win.board.scene().to_dict())
+        self.assertIn("第1条笔迹", ctx)
+        self.assertIn("#1e88e5", ctx)
+        win.close()
+
+
 if __name__ == "__main__":
-    unittest.main(verbosity=2)
+    prog = unittest.main(verbosity=2, exit=False)
+    # 测试已产出结论；在解释器终析前主动清理并以正确退出码结束，
+    # 规避 PySide6 终析阶段的 bool_dealloc 崩溃（SIGABRT）。
+    _cleanup_qt()
+    os._exit(0 if prog.result.wasSuccessful() else 1)

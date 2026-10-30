@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
 
 from .whiteboard import WhiteboardScene
 from .view import WhiteboardView
+from .ai_link import AITeacher, board_dict_to_text
 
 _PALETTE = ["#1A1A1A", "#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA"]
 
@@ -27,6 +28,9 @@ class MainWindow(QMainWindow):
         self.board = WhiteboardView(WhiteboardScene(), self)
         self.board.setToolTip("左键书写 · 右键删除笔迹 · E 切换橡皮擦 · Ctrl+Z 撤销")
         self.setCentralWidget(self.board)
+
+        # AI 教学联动：默认本地答疑，可经环境变量接入远程后端
+        self._ai = AITeacher()
 
         # 当前激活画笔颜色（用于工具栏高亮），默认取调色板第一色
         self._active_color = _PALETTE[0]
@@ -92,6 +96,11 @@ class MainWindow(QMainWindow):
         self._add_action(tb, "保存", self._save)
         self._add_action(tb, "载入", self._load)
         self._add_action(tb, "导出图片", self._export)
+
+        tb.addSeparator()
+
+        # AI 教学联动：将当前白板内容作为上下文，向 AI 提问
+        self._add_action(tb, "AI 答疑", self._ask_ai)
 
     def _label(self, text):
         from PySide6.QtWidgets import QLabel
@@ -209,3 +218,16 @@ class MainWindow(QMainWindow):
             return
         if not ok:
             QMessageBox.warning(self, "导出失败", "图片保存失败，请检查路径与权限。")
+
+    def _ask_ai(self):
+        """AI 教学联动入口：取当前白板快照作为上下文，向 AI 提问并展示答疑。"""
+        from PySide6.QtWidgets import QInputDialog
+
+        question, ok = QInputDialog.getText(self, "AI 教学答疑", "请输入你的问题：")
+        if not ok or not question.strip():
+            return
+        context = board_dict_to_text(self.board.scene().to_dict())
+        answer = self._ai.ask(question.strip(), context)
+        QMessageBox.information(
+            self, "AI 教学答疑", answer + "\n\n--- 白板快照 ---\n" + context
+        )

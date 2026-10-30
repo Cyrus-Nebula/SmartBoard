@@ -29,6 +29,7 @@ python main.py
 - **撤销 / 重做 / 清空**：完整的笔迹编辑栈，工具栏按钮随场景状态自动启用/禁用。
 - **保存 / 载入 / 导出图片**：白板以 JSON 格式序列化，便于分发与二次处理；并可将当前白板**导出为 PNG 图片**（工具栏「导出图片」按钮），仅截取笔迹内容区域（含留白），所见即所得，方便课堂分享与留存。
 - **画笔状态可视化**：当前激活颜色高亮，橡皮擦激活时颜色按钮自动降亮。
+- **AI 教学联动**：工具栏「AI 答疑」可将当前白板内容作为上下文向 AI 提问；默认本地规则答疑（无需联网即可演示），可经环境变量 `SMARTBOARD_AI_ENDPOINT` / `SMARTBOARD_AI_KEY` 接入远程大模型（预留钩子，不写死密钥，不改动界面代码）。
 - **键盘快捷键**：为常用操作提供快捷键，书写过程中无需切换鼠标即可撤销/重做/清空/切换橡皮擦（见下方列表）。
 
 ## 键盘快捷键
@@ -51,7 +52,8 @@ python main.py
 无界面（offscreen）冒烟与单元测试：
 
 ```bash
-QT_QPA_PLATFORM=offscreen python3.11 tests/test_smoke.py
+QT_QPA_PLATFORM=offscreen python3 tests/test_smoke.py
+QT_QPA_PLATFORM=offscreen python3 tests/test_ai_link.py
 ```
 
 ## 项目结构
@@ -60,8 +62,10 @@ QT_QPA_PLATFORM=offscreen python3.11 tests/test_smoke.py
 main.py                  启动入口
 smartboard/
   app.py                 应用入口（QApplication + MainWindow）
-  main_window.py         主窗口与工具栏（状态联动）
-  view.py                白板视图（鼠标交互 + 实时预览）
+  main_window.py         主窗口与工具栏（状态联动 + AI 答疑入口）
+  view.py                白板视图（鼠标交互 + 实时预览 + 图片导出）
   whiteboard.py          核心：Stroke 数据模型、WhiteboardScene、路径平滑
-tests/test_smoke.py      headless 测试套件
+  ai_link.py             AI 教学联动（可插拔：本地答疑 / 远程后端钩子）
+tests/test_smoke.py      headless 测试套件（37 项）
+tests/test_ai_link.py    AI 联动单元测试（7 项）
 ```
