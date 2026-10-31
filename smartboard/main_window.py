@@ -9,7 +9,7 @@ import os
 from PySide6.QtCore import Qt, QSize
 from PySide6.QtGui import QColor, QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QMainWindow, QToolBar, QPushButton, QSlider, QFileDialog, QMessageBox, QWidget,
+    QMainWindow, QToolBar, QPushButton, QSlider, QFileDialog, QMessageBox, QWidget, QLabel,
 )
 
 from .whiteboard import WhiteboardScene
@@ -37,6 +37,7 @@ class MainWindow(QMainWindow):
         self._color_buttons = {}   # hex -> QPushButton
 
         self._build_toolbar()
+        self._build_statusbar()
         self._install_shortcuts()
 
         # 工具栏状态联动：场景笔迹变化时刷新撤销/重做/清空按钮可用态
@@ -102,6 +103,42 @@ class MainWindow(QMainWindow):
         # AI 教学联动：将当前白板内容作为上下文，向 AI 提问
         self._add_action(tb, "AI 答疑", self._ask_ai)
 
+    def _build_statusbar(self):
+        """在底部状态栏常驻一块「实时状态」标签，反映当前工具与白板概况。
+
+        目的：课堂场景下教师常远离屏幕或经低分辨率投影授课，工具栏按钮的
+        高亮（如颜色边框）不易察觉；状态栏以文字形式常驻展示
+        「工具 / 颜色 / 线宽 / 笔迹数 / 可撤销/重做」，使书写状态一目了然。
+        该标签仅做展示，不参与任何笔迹逻辑，对既有功能零侵入。
+        """
+        label = QLabel()
+        label.setStyleSheet("padding: 0 8px;")
+        # 右侧常驻部件，窗口缩放时保持可见
+        self.statusBar().addPermanentWidget(label)
+        self._status_label = label
+        self._update_status()
+
+    def _update_status(self):
+        """根据当前画笔/橡皮擦状态与场景笔迹数，刷新状态栏文本。
+
+        纯展示逻辑：读取 self.board / self._active_color / 场景计数，不做任何写操作，
+        因此可安全地挂在 strokesChanged 信号链路上随笔迹变化自动刷新。
+        """
+        scene = self.board.scene()
+        if self.board.eraser:
+            tool = "橡皮擦"
+            color_part = ""                      # 橡皮擦模式下颜色无意义，省略
+        else:
+            tool = "画笔"
+            color_part = " | 颜色 " + self._active_color
+        width_part = " | 线宽 %dpx" % self.board.pen_width
+        undo = "可撤销" if scene.can_undo() else "不可撤销"
+        redo = "可重做" if scene.can_redo() else "不可重做"
+        text = "工具：%s%s%s | 笔迹 %d 条 | %s | %s" % (
+            tool, color_part, width_part, scene.count(), undo, redo,
+        )
+        self._status_label.setText(text)
+
     def _label(self, text):
         from PySide6.QtWidgets import QLabel
         w = QLabel(text)
@@ -158,6 +195,8 @@ class MainWindow(QMainWindow):
         self._undo_act.setEnabled(scene.can_undo())
         self._redo_act.setEnabled(scene.can_redo())
         self._clear_act.setEnabled(scene.count() > 0)
+        # 笔迹数/可撤销重做状态同时反映到状态栏（strokesChanged 会自动触发本方法）
+        self._update_status()
 
     # -- 回调 --
     def _pick_color(self, hex_color):
@@ -165,14 +204,17 @@ class MainWindow(QMainWindow):
         self._active_color = hex_color
         self._eraser_act.setChecked(False)
         self._refresh_color_buttons()
+        self._update_status()
 
     def _on_width(self, value):
         self.board.set_pen_width(value)
+        self._update_status()
 
     def _toggle_eraser(self, checked):
         self.board.set_eraser(checked)
         # 橡皮擦激活时取消颜色高亮，关闭时恢复
         self._refresh_color_buttons()
+        self._update_status()
 
     def _clear(self):
         self.board.scene().clear_all()

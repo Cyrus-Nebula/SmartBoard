@@ -737,6 +737,82 @@ class AIToolbarTest(unittest.TestCase):
         win.close()
 
 
+class StatusBarTest(unittest.TestCase):
+    """验证底部状态栏实时反映工具/颜色/线宽/笔迹数与可撤销重做状态。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _win(self):
+        self._app()
+        return MainWindow()
+
+    def test_statusbar_widget_present(self):
+        """主窗口应常驻一个状态标签部件，供实时状态展示。"""
+        self._app()
+        win = MainWindow()
+        self.assertIsNotNone(win.statusBar())
+        self.assertTrue(hasattr(win, "_status_label"))
+        from PySide6.QtWidgets import QLabel
+        self.assertIsInstance(win._status_label, QLabel)
+        win.close()
+
+    def test_status_initial_state(self):
+        """初始空白板：画笔模式、0 条笔迹、不可撤销/重做。"""
+        win = self._win()
+        text = win._status_label.text()
+        self.assertIn("画笔", text)
+        self.assertIn("笔迹 0 条", text)
+        self.assertIn("不可撤销", text)
+        self.assertIn("不可重做", text)
+        win.close()
+
+    def test_status_reflects_color_and_width(self):
+        """选色与改线宽应即时反映到状态栏。"""
+        win = self._win()
+        win._pick_color("#E53935")
+        win._on_width(12)
+        text = win._status_label.text()
+        self.assertIn("E53935", text)        # 颜色已更新
+        self.assertIn("12px", text)          # 线宽已更新
+        self.assertIn("画笔", text)          # 仍在画笔模式
+        win.close()
+
+    def test_status_reflects_eraser_mode(self):
+        """切换橡皮擦：状态栏应显示橡皮擦并隐藏颜色段。"""
+        win = self._win()
+        win._toggle_eraser(True)
+        text = win._status_label.text()
+        self.assertIn("橡皮擦", text)
+        self.assertNotIn("颜色", text)
+        # 关闭橡皮擦后应恢复画笔与颜色显示
+        win._toggle_eraser(False)
+        self.assertIn("画笔", win._status_label.text())
+        self.assertIn("颜色", win._status_label.text())
+        win.close()
+
+    def test_status_reflects_stroke_count_and_undo_redo(self):
+        """增/删笔迹应驱动状态栏的计数与可撤销/重做文案。"""
+        win = self._win()
+        scene = win.board.scene()
+        self.assertIn("笔迹 0 条", win._status_label.text())
+
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        text = win._status_label.text()
+        self.assertIn("笔迹 1 条", text)
+        self.assertIn("可撤销", text)
+        self.assertIn("不可重做", text)
+
+        self.assertTrue(scene.undo())
+        text = win._status_label.text()
+        self.assertIn("笔迹 0 条", text)
+        self.assertIn("不可撤销", text)
+        self.assertIn("可重做", text)
+        win.close()
+
+
 if __name__ == "__main__":
     prog = unittest.main(verbosity=2, exit=False)
     # 测试已产出结论；在解释器终析前主动清理并以正确退出码结束，
