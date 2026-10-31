@@ -67,6 +67,6 @@ smartboard/
   view.py                白板视图（鼠标交互 + 实时预览 + 图片导出）
   whiteboard.py          核心：Stroke 数据模型、WhiteboardScene、路径平滑
   ai_link.py             AI 教学联动（可插拔：本地答疑 / 远程后端钩子）
-tests/test_smoke.py      headless 测试套件（37 项）
+tests/test_smoke.py      headless 测试套件（42 项，含状态栏）
 tests/test_ai_link.py    AI 联动单元测试（7 项）
 ```
