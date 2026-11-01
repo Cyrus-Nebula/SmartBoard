@@ -5,11 +5,12 @@
 
 import math
 
-from PySide6.QtCore import Qt, QPointF, QRectF
+from PySide6.QtCore import Qt, QPoint, QPointF, QRectF
 from PySide6.QtGui import QColor, QPen, QPainter, QPixmap
 from PySide6.QtWidgets import QGraphicsView, QGraphicsPathItem
 
 from .whiteboard import Stroke, WhiteboardScene, simplify_points, SIMPLIFY_EPSILON
+from .pen_cursor import PenCursorOverlay
 
 
 class WhiteboardView(QGraphicsView):
@@ -43,17 +44,33 @@ class WhiteboardView(QGraphicsView):
         self._drawing = False
         self._current = None     # 正在绘制的 Stroke
         self._preview = None     # 实时预览的 QGraphicsPathItem
+        self._mouse_inside = False  # 鼠标是否位于白板视口内（控制光标环显隐）
+
+        # 画笔尺寸预览环：跟随鼠标、与当前画笔等大，帮助预判落点与笔宽。
+        # 挂在 viewport 上（非场景图元），因此对导出图片零侵入。
+        self.pen_cursor = PenCursorOverlay(self.viewport())
+        self.pen_cursor.set_pen(self.pen_width, self.pen_color)
 
     # -- 工具属性 --
     def set_pen_color(self, color):
         self.pen_color = QColor(color)
         self.eraser = False
+        self.pen_cursor.set_pen_color(self.pen_color)
 
     def set_pen_width(self, width):
         self.pen_width = max(1, int(width))
+        self.pen_cursor.set_pen(self.pen_width, self.pen_color)
 
     def set_eraser(self, on):
         self.eraser = bool(on)
+        self._update_cursor_visibility()
+
+    def _update_cursor_visibility(self):
+        """仅在「画笔模式 + 鼠标位于视口内」时显示预览环，橡皮模式隐藏。"""
+        if (not self.eraser) and self._mouse_inside:
+            self.pen_cursor.show()
+        else:
+            self.pen_cursor.hide()
 
     # -- 鼠标事件 --
     def mousePressEvent(self, event):
@@ -70,6 +87,8 @@ class WhiteboardView(QGraphicsView):
         super(WhiteboardView, self).mousePressEvent(event)
 
     def mouseMoveEvent(self, event):
+        # 预览环始终跟随鼠标（即使未落笔），让落点与笔宽在下笔前可见
+        self.pen_cursor.move_to(event.pos())
         if self._drawing and self._current is not None:
             pos = self.mapToScene(event.pos())
             last = self._current.points[-1]
@@ -78,6 +97,16 @@ class WhiteboardView(QGraphicsView):
                 self._current.points.append(pos)
                 self._update_preview()
         super(WhiteboardView, self).mouseMoveEvent(event)
+
+    def enterEvent(self, event):
+        self._mouse_inside = True
+        self._update_cursor_visibility()
+        super(WhiteboardView, self).enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._mouse_inside = False
+        self.pen_cursor.hide()
+        super(WhiteboardView, self).leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if self._drawing and event.button() == Qt.LeftButton:

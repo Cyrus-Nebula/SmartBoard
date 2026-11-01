@@ -15,7 +15,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import QPointF  # noqa: E402
+from PySide6.QtCore import Qt, QPointF, QPoint  # noqa: E402
 from PySide6.QtGui import QColor, QImage, QAction  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
@@ -29,6 +29,7 @@ from smartboard.whiteboard import (  # noqa: E402
     _perp_distance,
 )
 from smartboard.view import WhiteboardView  # noqa: E402
+from smartboard.pen_cursor import PenCursorOverlay  # noqa: E402
 from smartboard.main_window import MainWindow, _PALETTE  # noqa: E402
 
 # 保证整个测试过程存在唯一的 QApplication 实例。
@@ -811,6 +812,70 @@ class StatusBarTest(unittest.TestCase):
         self.assertIn("不可撤销", text)
         self.assertIn("可重做", text)
         win.close()
+
+
+class PenCursorTest(unittest.TestCase):
+    """验证画笔尺寸预览环：辅助书写预判，且不破坏既有书写/导出管线。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_overlay_exists_and_transparent(self):
+        """叠加层应存在、对鼠标事件透明、且不是场景图元（导出零侵入）。"""
+        self._app()
+        view = WhiteboardView()
+        self.assertTrue(hasattr(view, "pen_cursor"))
+        self.assertIsInstance(view.pen_cursor, PenCursorOverlay)
+        # 关键不变量：绝不拦截鼠标事件，否则会破坏书写/预览/右键擦除
+        self.assertTrue(view.pen_cursor.testAttribute(Qt.WA_TransparentForMouseEvents))
+        # 叠加层不是 QGraphicsItem，因此不会被 scene().render 卷入导出图片
+        self.assertNotIn(view.pen_cursor, view.scene().items())
+
+    def test_diameter_tracks_pen_width(self):
+        """圆环直径应实时跟随画笔线宽（1–40px 范围）。"""
+        self._app()
+        view = WhiteboardView()
+        view.set_pen_width(20)
+        self.assertAlmostEqual(view.pen_cursor.diameter(), 20.0)
+        view.set_pen_width(1)
+        self.assertAlmostEqual(view.pen_cursor.diameter(), 1.0)
+        view.set_pen_width(40)
+        self.assertAlmostEqual(view.pen_cursor.diameter(), 40.0)
+
+    def test_color_matches_pen(self):
+        """圆环颜色应与当前画笔颜色一致。"""
+        self._app()
+        view = WhiteboardView()
+        view.set_pen_color("#E53935")
+        self.assertEqual(view.pen_cursor.pen_color().name().upper(), "#E53935")
+
+    def test_visibility_pen_vs_eraser(self):
+        """画笔模式（鼠标在内）显示、橡皮模式隐藏。"""
+        self._app()
+        view = WhiteboardView()
+        view.show()  # 使窗口层级可见，isVisible() 才能反映叠加层自身显隐状态
+        view._mouse_inside = True
+        view._update_cursor_visibility()      # 画笔 + 鼠标在内 -> 显示
+        self.assertTrue(view.pen_cursor.isVisible())
+
+        view.set_eraser(True)                 # 切橡皮 -> 隐藏
+        self.assertFalse(view.pen_cursor.isVisible())
+
+        view.set_eraser(False)                # 切回画笔 -> 显示
+        self.assertTrue(view.pen_cursor.isVisible())
+
+    def test_move_to_centers_ring(self):
+        """move_to 应把圆环中心对齐到给定视口坐标。"""
+        self._app()
+        view = WhiteboardView()
+        view.pen_cursor.set_pen(10, "#1A1A1A")
+        view.pen_cursor.move_to(QPoint(100, 80))
+        # 直径 10 -> 半径 5，左上角 = 中心 - 半径
+        self.assertEqual(view.pen_cursor.x(), 95)
+        self.assertEqual(view.pen_cursor.y(), 75)
+        self.assertEqual(view.pen_cursor.width(), 10)
 
 
 if __name__ == "__main__":
