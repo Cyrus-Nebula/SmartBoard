@@ -26,7 +26,10 @@ class MainWindow(QMainWindow):
         self.resize(1000, 700)
 
         self.board = WhiteboardView(WhiteboardScene(), self)
-        self.board.setToolTip("左键书写 · 右键删除笔迹 · E 切换橡皮擦 · Ctrl+Z 撤销")
+        self.board.setToolTip(
+            "左键书写 · 右键删除笔迹 · 中键拖拽平移 · 滚轮缩放 · "
+            "E 切换橡皮擦 · Ctrl+Z 撤销"
+        )
         self.setCentralWidget(self.board)
 
         # AI 教学联动：默认本地答疑，可经环境变量接入远程后端
@@ -97,6 +100,7 @@ class MainWindow(QMainWindow):
         self._add_action(tb, "保存", self._save)
         self._add_action(tb, "载入", self._load)
         self._add_action(tb, "导出图片", self._export)
+        self._add_action(tb, "重置视图", self.board.reset_view)
 
         tb.addSeparator()
 
@@ -173,6 +177,10 @@ class MainWindow(QMainWindow):
         add("E", lambda: self._toggle_eraser(not self.board.eraser))  # 橡皮擦开关
         add("Ctrl+S", self._save)                       # 保存
         add("Ctrl+O", self._load)                       # 载入
+        # 画布缩放与复位（交互增强）：滚轮也可缩放，中键拖拽平移
+        add("Ctrl++", lambda: self.board.zoomBy(1.1))           # 放大
+        add("Ctrl+-", lambda: self.board.zoomBy(1.0 / 1.1))      # 缩小
+        add("Ctrl+0", self.board.reset_view)                     # 复位视图
 
     # -- 状态联动 --
     def _refresh_color_buttons(self):

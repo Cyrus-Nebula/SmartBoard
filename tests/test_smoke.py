@@ -878,6 +878,84 @@ class PenCursorTest(unittest.TestCase):
         self.assertEqual(view.pen_cursor.width(), 10)
 
 
+class ZoomPanTest(unittest.TestCase):
+    """验证新增的画布缩放 / 平移交互：仅作用于视图变换，不触碰场景数据。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _view(self):
+        self._app()
+        v = WhiteboardView()
+        v.resize(600, 400)
+        v.show()
+        v.centerOn(QPointF(0, 0))
+        return v
+
+    def test_zoom_increases_scale_factor(self):
+        """缩放应使视图变换的缩放系数按 factor 倍变化（默认以视图中心为锚）。"""
+        v = self._view()
+        before = v.transform().m11()
+        v.zoomBy(1.25)
+        after = v.transform().m11()
+        self.assertAlmostEqual(after, before * 1.25, delta=1e-6)
+
+    def test_zoom_anchor_keeps_cursor_scene_point(self):
+        """以光标为锚缩放：缩放前后光标处的场景坐标基本不动（聚焦光标）。
+
+        用像素空间校验——缩放后“原光标场景点”应仍落在光标像素附近（容忍滚动条取整）。
+        """
+        v = self._view()
+        cursor = QPoint(420, 180)
+        scene_at_cursor = v.mapToScene(cursor)
+        v.zoomBy(1.4, cursor)
+        back = v.mapFromScene(scene_at_cursor)
+        self.assertAlmostEqual(back.x(), cursor.x(), delta=1.5)
+        self.assertAlmostEqual(back.y(), cursor.y(), delta=1.5)
+
+    def test_pan_translates_content(self):
+        """中键平移 120 屏幕像素：视口中心对应的场景坐标左移约 120/scale。"""
+        v = self._view()
+        center = v.viewport().rect().center()
+        before = v.mapToScene(center)
+        v.pan(120, 0)
+        after = v.mapToScene(center)
+        f = v.transform().m11()
+        self.assertAlmostEqual(after.x(), before.x() - 120.0 / f, delta=1.5)
+        self.assertAlmostEqual(after.y(), before.y(), delta=1.5)
+
+    def test_reset_view_returns_to_identity(self):
+        """缩放 + 平移后：reset_view 应使缩放系数归 1 且原点回到视图中心。"""
+        v = self._view()
+        v.zoomBy(1.8)
+        v.pan(50, 30)
+        v.reset_view()
+        self.assertAlmostEqual(v.transform().m11(), 1.0, delta=1e-6)
+        # 原点应大致回到视图中心（容忍 offscreen 下场景矩形对齐的取整）
+        center_scene = v.mapToScene(v.viewport().rect().center())
+        self.assertAlmostEqual(center_scene.x(), 0.0, delta=1.5)
+        self.assertAlmostEqual(center_scene.y(), 0.0, delta=1.5)
+
+    def test_zoom_pan_do_not_alter_strokes(self):
+        """回归：缩放/平移不应改变场景笔迹数或任一笔迹的点集（仅视图变换）。"""
+        v = self._view()
+        s = Stroke(QColor("#1A1A1A"), 6, [QPointF(0, 0), QPointF(40, 30), QPointF(10, 60)])
+        v.scene().add_stroke(s)
+        pts_before = [QPointF(p) for p in s.points]
+
+        v.zoomBy(1.5)
+        v.pan(80, -40)
+        v.zoomBy(0.8, QPoint(300, 200))
+
+        self.assertEqual(v.scene().count(), 1)
+        self.assertEqual(len(v.scene()._strokes[0].points), len(pts_before))
+        for a, b in zip(v.scene()._strokes[0].points, pts_before):
+            self.assertAlmostEqual(a.x(), b.x(), delta=1e-9)
+            self.assertAlmostEqual(a.y(), b.y(), delta=1e-9)
+
+
 if __name__ == "__main__":
     prog = unittest.main(verbosity=2, exit=False)
     # 测试已产出结论；在解释器终析前主动清理并以正确退出码结束，

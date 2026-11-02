@@ -6,7 +6,7 @@
 import math
 
 from PySide6.QtCore import Qt, QPoint, QPointF, QRectF
-from PySide6.QtGui import QColor, QPen, QPainter, QPixmap
+from PySide6.QtGui import QColor, QPen, QPainter, QPixmap, QTransform
 from PySide6.QtWidgets import QGraphicsView, QGraphicsPathItem
 
 from .whiteboard import Stroke, WhiteboardScene, simplify_points, SIMPLIFY_EPSILON
@@ -46,10 +46,66 @@ class WhiteboardView(QGraphicsView):
         self._preview = None     # 实时预览的 QGraphicsPathItem
         self._mouse_inside = False  # 鼠标是否位于白板视口内（控制光标环显隐）
 
+        # 画布漫游：滚轮以光标为锚缩放、中键拖拽平移（教学时放大细节 / 漫游大图）。
+        # 这些只作用于「视图变换」，不改动场景数据、笔迹、预览环与导出，因此
+        # 对既有书写、橡皮擦、序列化与 PNG 导出管线完全零侵入。
+        self._panning = False
+        self._pan_last = QPoint()
+
         # 画笔尺寸预览环：跟随鼠标、与当前画笔等大，帮助预判落点与笔宽。
         # 挂在 viewport 上（非场景图元），因此对导出图片零侵入。
         self.pen_cursor = PenCursorOverlay(self.viewport())
         self.pen_cursor.set_pen(self.pen_width, self.pen_color)
+
+    # -- 画布缩放与平移（仅作用于视图变换，不触碰场景数据）--
+    def zoomBy(self, factor, anchor_view=None):
+        """以 anchor_view（视口坐标，默认视图中心）为锚点缩放 factor 倍。
+
+        缩放后锚点对应的场景坐标保持在原视口位置，因此滚轮缩放会“聚焦”在光标处。
+        实现上先以视图中心为锚 scale（保持中心场景点不动），再通过滚动条补偿把
+        锚点的场景坐标拉回原位置；所有视图变换都不影响场景中的笔迹、预览环与导出。
+        """
+        if factor <= 0.0:
+            return
+        vp = self.viewport().rect()
+        if anchor_view is None:
+            anchor_view = vp.center()
+        # 1) 记录锚点（视口坐标）当前对应的场景坐标
+        scene_at_anchor = self.mapToScene(anchor_view)
+        # 2) 以视图中心为锚缩放（默认 AnchorViewCenter 保持中心场景点不动）
+        self.scale(factor, factor)
+        # 3) 滚动条补偿：以中心为锚缩放会把锚点相对中心的像素偏移 d 放大 factor 倍，
+        #    故把内容反向平移 d*(1-factor) 像素，使“光标处内容”保持不动（聚焦光标）。
+        center = vp.center()
+        dx = (anchor_view.x() - center.x()) * (1.0 - factor)
+        dy = (anchor_view.y() - center.y()) * (1.0 - factor)
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() - int(round(dx)))
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() - int(round(dy)))
+
+    def pan(self, dx_view, dy_view):
+        """按屏幕像素位移平移画布（中键拖拽调用）。dx/dy 为视口像素增量。"""
+        self.horizontalScrollBar().setValue(
+            self.horizontalScrollBar().value() - int(round(dx_view)))
+        self.verticalScrollBar().setValue(
+            self.verticalScrollBar().value() - int(round(dy_view)))
+
+    def reset_view(self):
+        """复位视图：缩放归 1 并将原点居中（缩放/平移后一键还原）。"""
+        self.setTransform(QTransform())
+        self.centerOn(0.0, 0.0)
+
+    def wheelEvent(self, event):
+        """滚轮缩放：以光标为锚点平滑缩放（教学时放大细节、缩小总览）。"""
+        delta = event.angleDelta().y()
+        if delta == 0:
+            super(WhiteboardView, self).wheelEvent(event)
+            return
+        # 平滑缩放：每 1/8 度对应一个接近 1 的底数，惯用滚轮步长（120）≈ 放大 20%
+        factor = 1.0015 ** (-delta)
+        self.zoomBy(factor, event.pos())
+        event.accept()
 
     # -- 工具属性 --
     def set_pen_color(self, color):
@@ -74,6 +130,13 @@ class WhiteboardView(QGraphicsView):
 
     # -- 鼠标事件 --
     def mousePressEvent(self, event):
+        if event.button() == Qt.MiddleButton:
+            # 中键：进入平移模式，不干扰左键书写 / 右键精确擦除
+            self._panning = True
+            self._pan_last = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            event.accept()
+            return
         if event.button() == Qt.RightButton:
             # 右键：精确擦除光标下的整条笔迹（独立于当前画笔/橡皮工具）
             if not self._drawing:
@@ -89,6 +152,12 @@ class WhiteboardView(QGraphicsView):
     def mouseMoveEvent(self, event):
         # 预览环始终跟随鼠标（即使未落笔），让落点与笔宽在下笔前可见
         self.pen_cursor.move_to(event.pos())
+        if self._panning:
+            # 中键平移：把视口像素位移换算到场景坐标后平移视图
+            delta = event.pos() - self._pan_last
+            self._pan_last = event.pos()
+            self.pan(delta.x(), delta.y())
+            return
         if self._drawing and self._current is not None:
             pos = self.mapToScene(event.pos())
             last = self._current.points[-1]
@@ -109,6 +178,12 @@ class WhiteboardView(QGraphicsView):
         super(WhiteboardView, self).leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
+        if self._panning and event.button() == Qt.MiddleButton:
+            # 结束平移，恢复指针光标
+            self._panning = False
+            self.setCursor(Qt.ArrowCursor)
+            event.accept()
+            return
         if self._drawing and event.button() == Qt.LeftButton:
             self._drawing = False
             self._finish_preview()
