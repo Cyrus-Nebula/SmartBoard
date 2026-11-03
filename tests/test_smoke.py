@@ -16,7 +16,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from PySide6.QtCore import Qt, QPointF, QPoint  # noqa: E402
-from PySide6.QtGui import QColor, QImage, QAction  # noqa: E402
+from PySide6.QtGui import QColor, QImage, QAction, QTransform  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from smartboard.whiteboard import (  # noqa: E402
@@ -954,6 +954,91 @@ class ZoomPanTest(unittest.TestCase):
         for a, b in zip(v.scene()._strokes[0].points, pts_before):
             self.assertAlmostEqual(a.x(), b.x(), delta=1e-9)
             self.assertAlmostEqual(a.y(), b.y(), delta=1e-9)
+
+
+class ZoomAwareWritingTest(unittest.TestCase):
+    """验证缩放感知的书写采样与预览环（书写体验，headless 可验证）。
+
+    背景：原实现采样阈值固定 1 场景像素、预览环直径固定=线宽（屏幕像素）。
+    这导致放大时笔迹因采点被丢而变锯齿、预览环不再匹配实际屏幕笔宽。
+    修复后：采样阈值随缩放反比（屏幕约 1px 恒定）；环直径=线宽×scale。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _view(self):
+        self._app()
+        v = WhiteboardView()
+        v.resize(600, 400)
+        v.show()
+        v.centerOn(QPointF(0, 0))
+        return v
+
+    def test_sample_threshold_scales_with_zoom(self):
+        """采样阈值随缩放反比：scale1→1.0, scale2→0.5, scale0.5→2.0。"""
+        v = self._view()
+        self.assertAlmostEqual(v._scene_sample_threshold(), 1.0, delta=1e-9)
+        v.setTransform(QTransform().scale(2.0, 2.0))
+        self.assertAlmostEqual(v._scene_sample_threshold(), 0.5, delta=1e-9)
+        v.setTransform(QTransform().scale(0.5, 0.5))
+        self.assertAlmostEqual(v._scene_sample_threshold(), 2.0, delta=1e-9)
+
+    def test_cursor_diameter_scales_with_zoom(self):
+        """预览环直径随缩放 = 线宽×scale：放大 2× 后直径翻倍，复位后还原。"""
+        v = self._view()
+        v.set_pen_width(10)
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 10.0, delta=1e-9)
+        v.zoomBy(2.0)                       # 缩放改变映射
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 20.0, delta=1e-9)
+        v.reset_view()                      # 缩放归 1
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 10.0, delta=1e-9)
+
+    def _start_stroke(self, view, deltas):
+        """以视口中心为起点，按 deltas（视口像素增量）驱动左键按下与若干移动。"""
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        vp = view.viewport()
+        center = vp.rect().center()
+        QTest.mousePress(vp, Qt.LeftButton, pos=center)
+        for dx, dy in deltas:
+            QTest.mouseMove(vp, QPoint(center.x() + dx, center.y() + dy))
+        return center
+
+    def _end_stroke(self, view, last_delta):
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+        vp = view.viewport()
+        center = vp.rect().center()
+        QTest.mouseRelease(
+            vp, Qt.LeftButton,
+            pos=QPoint(center.x() + last_delta[0], center.y() + last_delta[1]),
+        )
+
+    def test_sampling_regression_at_scale1(self):
+        """回归：scale1 下累计 1px、2px 两跳各满足 1px 阈值 → 采到 3 个采样点。"""
+        v = self._view()
+        self._start_stroke(v, [(1, 0), (2, 0)])
+        # 抬起前 _current 保存完整采样（提交时的 RDP 抽稀不影响此处计数）
+        self.assertEqual(len(v._current.points), 3)     # 起点 + 2 跳
+        self._end_stroke(v, (2, 0))
+        self.assertEqual(v.scene().count(), 1)          # 提交为 1 条笔迹
+
+    def test_zoomed_in_no_longer_drops_samples(self):
+        """放大 2× 后，同样的 1px、2px 两跳仍被采样（3 点），证明放大时不再丢点变锯齿。
+
+        对照（修复前）：scale2 下固定 1 场景像素阈值会把中间那跳（0.5 场景像素）丢弃，
+        只剩起点与终点 2 点。本断言确认修复后保留 3 点，笔迹在放大时依然平滑。
+        """
+        v = self._view()
+        v.zoomBy(2.0)
+        v.centerOn(QPointF(0, 0))
+        self._start_stroke(v, [(1, 0), (2, 0)])
+        self.assertEqual(len(v._current.points), 3)     # 放大下仍采到 3 点
+        self._end_stroke(v, (2, 0))
+        self.assertEqual(v.scene().count(), 1)
 
 
 if __name__ == "__main__":

@@ -52,10 +52,11 @@ class WhiteboardView(QGraphicsView):
         self._panning = False
         self._pan_last = QPoint()
 
-        # 画笔尺寸预览环：跟随鼠标、与当前画笔等大，帮助预判落点与笔宽。
+        # 画笔尺寸预览环：跟随鼠标、与当前画笔在「屏幕」上等宽，帮助预判落点与笔宽。
         # 挂在 viewport 上（非场景图元），因此对导出图片零侵入。
+        # 环直径需随视图缩放同步（见 _sync_cursor），否则放大/缩小时无法真实反映落笔粗细。
         self.pen_cursor = PenCursorOverlay(self.viewport())
-        self.pen_cursor.set_pen(self.pen_width, self.pen_color)
+        self._sync_cursor()
 
     # -- 画布缩放与平移（仅作用于视图变换，不触碰场景数据）--
     def zoomBy(self, factor, anchor_view=None):
@@ -83,6 +84,8 @@ class WhiteboardView(QGraphicsView):
             self.horizontalScrollBar().value() - int(round(dx)))
         self.verticalScrollBar().setValue(
             self.verticalScrollBar().value() - int(round(dy)))
+        # 缩放改变了屏幕像素↔场景的映射，预览环直径需同步（否则不再匹配实际笔宽）
+        self._sync_cursor()
 
     def pan(self, dx_view, dy_view):
         """按屏幕像素位移平移画布（中键拖拽调用）。dx/dy 为视口像素增量。"""
@@ -95,6 +98,8 @@ class WhiteboardView(QGraphicsView):
         """复位视图：缩放归 1 并将原点居中（缩放/平移后一键还原）。"""
         self.setTransform(QTransform())
         self.centerOn(0.0, 0.0)
+        # 缩放归 1：预览环直径回到「线宽 == 屏幕像素」的原始状态
+        self._sync_cursor()
 
     def wheelEvent(self, event):
         """滚轮缩放：以光标为锚点平滑缩放（教学时放大细节、缩小总览）。"""
@@ -111,11 +116,11 @@ class WhiteboardView(QGraphicsView):
     def set_pen_color(self, color):
         self.pen_color = QColor(color)
         self.eraser = False
-        self.pen_cursor.set_pen_color(self.pen_color)
+        self._sync_cursor()
 
     def set_pen_width(self, width):
         self.pen_width = max(1, int(width))
-        self.pen_cursor.set_pen(self.pen_width, self.pen_color)
+        self._sync_cursor()
 
     def set_eraser(self, on):
         self.eraser = bool(on)
@@ -127,6 +132,32 @@ class WhiteboardView(QGraphicsView):
             self.pen_cursor.show()
         else:
             self.pen_cursor.hide()
+
+    def _sync_cursor(self):
+        """让预览环直径匹配画笔在「屏幕」上的实际宽度（= 线宽 × 当前缩放）。
+
+        预览环挂在视口（屏幕像素空间），而笔迹线宽是场景坐标；
+        屏幕上一条 width 宽的笔迹实际渲染为 width×scale 像素。
+        因此必须随视图缩放同步环直径，才能真实反映下笔粗细
+        （避免放大后“环比实际笔迹细”、缩小时比实际粗，破坏落点/笔宽预判）。
+        仅在画笔模式有效；橡皮模式环被隐藏，尺寸误差无视觉影响。
+        """
+        scale = self.transform().m11()
+        if scale <= 0.0:
+            scale = 1.0
+        self.pen_cursor.set_pen(self.pen_width * scale, self.pen_color)
+
+    def _scene_sample_threshold(self):
+        """鼠标采样的场景坐标间距阈值，保持「屏幕约 1px」恒定。
+
+        原实现固定 1 场景像素：放大时相邻屏幕采样点 < 1 场景像素而被丢弃，
+        笔画变锯齿；缩小时又过度密集采样。改为 1/scale（屏幕 1px 对应的场景距离），
+        使任意缩放下笔迹密度与手感一致。为避免极端缩放下的病态值，夹在 [0.5, 4] 场景像素。
+        """
+        scale = self.transform().m11()
+        if scale <= 0.0:
+            scale = 1.0
+        return max(0.5, min(4.0, 1.0 / scale))
 
     # -- 鼠标事件 --
     def mousePressEvent(self, event):
@@ -161,8 +192,9 @@ class WhiteboardView(QGraphicsView):
         if self._drawing and self._current is not None:
             pos = self.mapToScene(event.pos())
             last = self._current.points[-1]
-            # 仅在移动超过 1px 时采样，减少冗余点、保持笔迹干净
-            if (pos - last).manhattanLength() >= 1.0:
+            # 仅在「屏幕约 1px」对应的场景距离上采样，减少冗余点、保持笔迹干净；
+            # 阈值随缩放自适应（见 _scene_sample_threshold），放大时也采样得足够密。
+            if (pos - last).manhattanLength() >= self._scene_sample_threshold():
                 self._current.points.append(pos)
                 self._update_preview()
         super(WhiteboardView, self).mouseMoveEvent(event)
