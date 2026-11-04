@@ -5,6 +5,7 @@
 """
 
 import json
+import math
 
 from PySide6.QtCore import Qt, QPointF, Signal
 from PySide6.QtGui import QColor, QPen, QBrush, QPainter, QPainterPath
@@ -157,6 +158,11 @@ class WhiteboardScene(QGraphicsScene):
         self._redo = []                    # 撤销栈
         self._z_counter = 0                # 单调递增 z 计数器（决定层叠顺序）
 
+        # 书写辅助网格（默认关闭，对既有书写/橡皮擦/序列化/导出零侵入）
+        self._grid_enabled = False
+        self._grid_size = 40.0             # 网格间距（场景坐标，px）
+        self._grid_color = QColor("#E6E6E6")  # 极淡灰，投影下不喧宾夺主
+
     # -- 公开访问器（便于测试与外部读取）--
     def count(self):
         return len(self._strokes)
@@ -240,6 +246,51 @@ class WhiteboardScene(QGraphicsScene):
         self._redo = []
         self._z_counter = 0
         self.strokesChanged.emit()
+
+    # -- 书写辅助网格 --
+    def set_grid_enabled(self, on):
+        """开关淡淡的书写辅助网格：帮助对齐与保持书写水平。
+
+        网格画在场景背景层，因此视图与 PNG 导出均「所见即所得」地包含它；
+        但默认关闭，对既有书写、橡皮擦、序列化与导出逻辑零侵入。
+        """
+        self._grid_enabled = bool(on)
+        self.update()  # 触发背景重绘（含网格），无网格时仅是一次空重绘
+
+    def is_grid_enabled(self):
+        return self._grid_enabled
+
+    def set_grid_size(self, size):
+        """设置网格间距（场景坐标，单位 px）；过小的间距会被夹到 4px 以避免过密。"""
+        self._grid_size = max(4.0, float(size))
+        if self._grid_enabled:
+            self.update()
+
+    def grid_size(self):
+        return self._grid_size
+
+    def drawBackground(self, painter, rect):
+        # 先绘制纯色背景（保留默认行为，保证橡皮/导出底色一致），再叠加可选网格
+        super(WhiteboardScene, self).drawBackground(painter, rect)
+        if not self._grid_enabled:
+            return
+        step = self._grid_size
+        if step <= 0:
+            return
+        pen = QPen(self._grid_color)
+        # 网格线宽以「屏幕像素」计（cosmetic），任意缩放下保持纤细一致
+        pen.setCosmetic(True)
+        painter.save()
+        painter.setPen(pen)
+        x = math.floor(rect.left() / step) * step
+        while x <= rect.right():
+            painter.drawLine(QPointF(x, rect.top()), QPointF(x, rect.bottom()))
+            x += step
+        y = math.floor(rect.top() / step) * step
+        while y <= rect.bottom():
+            painter.drawLine(QPointF(rect.left(), y), QPointF(rect.right(), y))
+            y += step
+        painter.restore()
 
     # -- 序列化 --
     def to_dict(self):

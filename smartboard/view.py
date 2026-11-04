@@ -126,6 +126,13 @@ class WhiteboardView(QGraphicsView):
         self.eraser = bool(on)
         self._update_cursor_visibility()
 
+    # -- 书写辅助网格（委托给场景，保持视图/导出一致）--
+    def set_grid_enabled(self, on):
+        self.scene().set_grid_enabled(on)
+
+    def is_grid_enabled(self):
+        return self.scene().is_grid_enabled()
+
     def _update_cursor_visibility(self):
         """仅在「画笔模式 + 鼠标位于视口内」时显示预览环，橡皮模式隐藏。"""
         if (not self.eraser) and self._mouse_inside:

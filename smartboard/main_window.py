@@ -104,6 +104,13 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        # 书写辅助网格：可勾选的淡色参考线，帮助对齐与保持书写水平
+        self._grid_act = self._add_action(tb, "网格", self._toggle_grid)
+        self._grid_act.setCheckable(True)
+        self._grid_act.setToolTip("书写辅助网格：淡淡的参考线，帮助对齐与保持书写水平")
+
+        tb.addSeparator()
+
         # AI 教学联动：将当前白板内容作为上下文，向 AI 提问
         self._add_action(tb, "AI 答疑", self._ask_ai)
 
@@ -136,10 +143,11 @@ class MainWindow(QMainWindow):
             tool = "画笔"
             color_part = " | 颜色 " + self._active_color
         width_part = " | 线宽 %dpx" % self.board.pen_width
+        grid_part = " | 网格 开" if self.board.is_grid_enabled() else " | 网格 关"
         undo = "可撤销" if scene.can_undo() else "不可撤销"
         redo = "可重做" if scene.can_redo() else "不可重做"
-        text = "工具：%s%s%s | 笔迹 %d 条 | %s | %s" % (
-            tool, color_part, width_part, scene.count(), undo, redo,
+        text = "工具：%s%s%s%s | 笔迹 %d 条 | %s | %s" % (
+            tool, color_part, width_part, grid_part, scene.count(), undo, redo,
         )
         self._status_label.setText(text)
 
@@ -181,6 +189,7 @@ class MainWindow(QMainWindow):
         add("Ctrl++", lambda: self.board.zoomBy(1.1))           # 放大
         add("Ctrl+-", lambda: self.board.zoomBy(1.0 / 1.1))      # 缩小
         add("Ctrl+0", self.board.reset_view)                     # 复位视图
+        add("G", lambda: self._toggle_grid(not self.board.is_grid_enabled()))  # 网格开关
 
     # -- 状态联动 --
     def _refresh_color_buttons(self):
@@ -222,6 +231,12 @@ class MainWindow(QMainWindow):
         self.board.set_eraser(checked)
         # 橡皮擦激活时取消颜色高亮，关闭时恢复
         self._refresh_color_buttons()
+        self._update_status()
+
+    def _toggle_grid(self, checked):
+        """开启/关闭书写辅助网格，并同步工具栏勾选态与状态栏。"""
+        self.board.set_grid_enabled(checked)
+        self._grid_act.setChecked(self.board.is_grid_enabled())
         self._update_status()
 
     def _clear(self):

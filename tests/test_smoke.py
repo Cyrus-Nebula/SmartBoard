@@ -1041,6 +1041,108 @@ class ZoomAwareWritingTest(unittest.TestCase):
         self.assertEqual(v.scene().count(), 1)
 
 
+class GridBackgroundTest(unittest.TestCase):
+    """验证书写辅助网格：默认关闭（零侵入），可开关，且渲染/导出中包含网格像素。"""
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    @staticmethod
+    def _win():
+        GridBackgroundTest._app()
+        return MainWindow()
+
+    @staticmethod
+    def _tmp_png():
+        fd, path = tempfile.mkstemp(suffix=".png")
+        os.close(fd)
+        return path
+
+    @staticmethod
+    def _count_non_bg(path, bg):
+        """统计与背景色不同的像素数（采样，用于判断网格是否落入导出图）。"""
+        img = QImage(path)
+        non_bg = 0
+        step_x = max(1, img.width() // 20)
+        step_y = max(1, img.height() // 20)
+        for y in range(0, img.height(), step_y):
+            for x in range(0, img.width(), step_x):
+                if img.pixelColor(x, y) != bg:
+                    non_bg += 1
+        return non_bg
+
+    def test_grid_off_by_default(self):
+        """回归：网格默认关闭，对既有书写/导出零侵入。"""
+        self._app()
+        scene = WhiteboardScene()
+        self.assertFalse(scene.is_grid_enabled())
+
+    def test_grid_toggle_flag(self):
+        scene = WhiteboardScene()
+        self.assertFalse(scene.is_grid_enabled())
+        scene.set_grid_enabled(True)
+        self.assertTrue(scene.is_grid_enabled())
+        scene.set_grid_enabled(False)
+        self.assertFalse(scene.is_grid_enabled())
+
+    def test_grid_renders_in_export(self):
+        """开启网格后，空场景导出也应含网格像素（非背景）。"""
+        self._app()
+        view = WhiteboardView()
+        view.scene().set_grid_enabled(True)
+        path = self._tmp_png()
+        try:
+            self.assertTrue(view.export_image(path, "PNG"))
+            bg = view.scene().backgroundBrush().color()
+            self.assertGreater(self._count_non_bg(path, bg), 0)
+        finally:
+            os.remove(path)
+
+    def test_no_grid_when_disabled(self):
+        """默认关闭网格时，空场景导出应只有纯背景（无非背景像素）。"""
+        self._app()
+        view = WhiteboardView()
+        self.assertFalse(view.scene().is_grid_enabled())
+        path = self._tmp_png()
+        try:
+            self.assertTrue(view.export_image(path, "PNG"))
+            bg = view.scene().backgroundBrush().color()
+            self.assertEqual(self._count_non_bg(path, bg), 0)
+        finally:
+            os.remove(path)
+
+    def test_grid_toggle_via_mainwindow(self):
+        """工具栏「网格」按钮应同步开启/关闭场景网格与按钮勾选态。"""
+        self._app()
+        win = self._win()
+        self.assertFalse(win.board.is_grid_enabled())
+        self.assertFalse(win._grid_act.isChecked())
+
+        win._toggle_grid(True)
+        self.assertTrue(win.board.is_grid_enabled())
+        self.assertTrue(win._grid_act.isChecked())
+
+        win._toggle_grid(False)
+        self.assertFalse(win.board.is_grid_enabled())
+        self.assertFalse(win._grid_act.isChecked())
+        win.close()
+
+    def test_grid_shortcut_toggles(self):
+        """快捷键 G 应切换网格开关。"""
+        from PySide6.QtGui import QShortcut
+        win = self._win()
+        self.assertFalse(win.board.is_grid_enabled())
+        g_sc = next(s for s in win.findChildren(QShortcut)
+                    if s.key().toString() == "G")
+        g_sc.activated.emit()
+        self.assertTrue(win.board.is_grid_enabled())
+        g_sc.activated.emit()
+        self.assertFalse(win.board.is_grid_enabled())
+        win.close()
+
+
 if __name__ == "__main__":
     prog = unittest.main(verbosity=2, exit=False)
     # 测试已产出结论；在解释器终析前主动清理并以正确退出码结束，
