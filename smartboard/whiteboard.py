@@ -300,10 +300,32 @@ class WhiteboardScene(QGraphicsScene):
         return json.dumps(self.to_dict(), ensure_ascii=False)
 
     def load_dict(self, data):
-        """用 dict 覆盖当前内容（用于载入文件）。"""
+        """用 dict 覆盖当前内容（用于载入文件）。
+
+        原子性保证：先完整解析并校验所有笔迹，只有全部成功后才替换场景内容。
+        任何一条笔迹格式非法都会整体失败并抛出 ValueError，且**不会清空**当前白板——
+        避免「载入损坏文件导致正在编辑的内容被抹掉且无法恢复」的数据丢失风险。
+        仅当全部解析通过，才执行 clear + attach，与旧行为一致。
+        """
+        if not isinstance(data, dict):
+            raise ValueError("白板文件格式无效：根节点应为 JSON 对象")
+        raw = data.get("strokes", []) or []
+        parsed = []
+        for idx, sd in enumerate(raw):
+            if not isinstance(sd, dict):
+                raise ValueError(
+                    "白板文件格式无效：第 %d 条笔迹不是 JSON 对象" % (idx + 1)
+                )
+            try:
+                parsed.append(Stroke.from_dict(sd))
+            except (ValueError, TypeError, KeyError, AttributeError) as exc:
+                raise ValueError(
+                    "白板文件格式无效：第 %d 条笔迹解析失败（%s）" % (idx + 1, exc)
+                )
+        # 全部解析成功后再替换场景内容，确保「半途失败不丢当前白板」
         self.clear_all()
-        for sd in data.get("strokes", []):
-            self._attach(Stroke.from_dict(sd))
+        for s in parsed:
+            self._attach(s)
         # clear_all 已置空并发射过一次，这里在所有笔迹挂上后再发一次，
         # 保证界面在「载入」操作后拿到最终正确状态。
         self.strokesChanged.emit()

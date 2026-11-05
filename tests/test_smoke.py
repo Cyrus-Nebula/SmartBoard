@@ -1143,6 +1143,74 @@ class GridBackgroundTest(unittest.TestCase):
         win.close()
 
 
+class RobustLoadTest(unittest.TestCase):
+    """验证载入的原子性：损坏/非法文件不会清空当前白板（数据丢失防护）。
+
+    背景与修复：旧实现 load_dict 先 clear_all() 再逐条解析，若文件中任一笔迹
+    格式非法，from_dict 抛错时当前白板已被清空且无法用撤销恢复——载入损坏文件
+    会永久抹掉正在编辑的内容。新实现先完整校验再替换，任何非法都整体失败且不丢盘。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def test_valid_load_replaces_content(self):
+        """合法文件：覆盖当前内容，且行为与原实现一致。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        data = {"version": 1, "strokes": [
+            {"color": "#E53935", "width": 6, "points": [[1, 1], [9, 9]]}]}
+        scene.load_dict(data)
+        self.assertEqual(scene.count(), 1)
+        self.assertEqual(scene._strokes[0].color.name().upper(), "#E53935")
+
+    def test_malformed_point_shape_keeps_current_board(self):
+        """载入含非法笔迹（点坐标非二元组）应抛 ValueError，且原白板不被清空。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        before = scene.count()
+        bad = {"strokes": [
+            {"color": "#E53935", "width": 6, "points": [[1, 1], [9, 9]]},
+            {"color": "#1E88E5", "width": 4, "points": [[1, 2, 3]]},  # 三元组非法
+        ]}
+        with self.assertRaises(ValueError):
+            scene.load_dict(bad)
+        # 关键不变量：原白板未被清空（原子性保护）
+        self.assertEqual(scene.count(), before)
+        self.assertEqual(len(scene._strokes), before)
+        self.assertEqual(len(scene._items), before)
+
+    def test_non_dict_root_raises_and_preserves(self):
+        """根节点不是对象（如 JSON 数组/标量）应抛错且不丢当前白板。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0)]))
+        before = scene.count()
+        with self.assertRaises(ValueError):
+            scene.load_dict([1, 2, 3])
+        self.assertEqual(scene.count(), before)
+
+    def test_atomic_no_partial_attach(self):
+        """原子性：即便前几条合法，只要有一条非法，整批都不挂入，白板保持原样。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0)]))
+        before = scene.count()
+        bad = {"strokes": [
+            {"color": "#E53935", "width": 6, "points": [[1, 1], [9, 9]]},  # 合法
+            {"color": "#1E88E5", "width": 4, "points": "not-a-list"},      # 非法
+        ]}
+        with self.assertRaises(ValueError):
+            scene.load_dict(bad)
+        # 合法的第一条也未被挂入（无半途提交）
+        self.assertEqual(scene.count(), before)
+        self.assertEqual(len(scene._items), before)
+
+
 if __name__ == "__main__":
     prog = unittest.main(verbosity=2, exit=False)
     # 测试已产出结论；在解释器终析前主动清理并以正确退出码结束，
