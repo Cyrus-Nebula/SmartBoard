@@ -12,7 +12,10 @@
 
 from __future__ import annotations
 
+import json
 import os
+import urllib.error
+import urllib.request
 from typing import Dict, List, Optional
 
 
@@ -50,11 +53,20 @@ def _fmt_point(p):
 
 
 class AITeacher:
-    """AI 教学联动核心。"""
+    """AI 教学联动核心。
 
-    def __init__(self, endpoint=None, api_key=None):
+    默认走本地规则答疑（无需联网即可演示与测试）；若配置了 endpoint
+    （环境变量 SMARTBOARD_AI_ENDPOINT / SMARTBOARD_AI_KEY 注入，不写死密钥），
+    则发起一次标准库 HTTP 请求，兼容纯文本 / JSON / OpenAI 风格应答。
+    任何网络异常都**优雅降级**到本地答疑，绝不抛出中断白板使用。
+    """
+
+    def __init__(self, endpoint=None, api_key=None, timeout=8.0):
         self.endpoint = endpoint or os.environ.get("SMARTBOARD_AI_ENDPOINT")
         self.api_key = api_key or os.environ.get("SMARTBOARD_AI_KEY")
+        # 单次远程请求超时（秒）：过长会卡住界面，过短易误判为失败。
+        # 仅作用于已配置 endpoint 的远程模式，默认本地模式不受影响。
+        self.timeout = float(timeout)
 
     def ask(self, question, context=""):
         if not question or not question.strip():
@@ -71,6 +83,86 @@ class AITeacher:
                 "必要时用不同颜色高亮关键点。").format(q=question, n=n)
 
     def _ask_remote(self, question, context):
-        # 预留真实后端调用：实际接入时可用 requests 将 (question, context)
-        # POST 到 self.endpoint。本体不在此发起网络请求，保持离线可用与可测试。
-        return "[远程模式已配置但未启用网络请求] " + self._ask_local(question, context)
+        """已配置远程后端时，真正发起一次 HTTP 请求并把答复回传。
+
+        设计约束：
+        - 仅用标准库 urllib，无第三方依赖，兼容 Python 3.7 / 离线环境；
+        - 带超时（默认 8s），不把界面长时间卡死；
+        - 任何失败（网络不可达 / 超时 / 非 200 / 响应畸形）一律**优雅降级**
+          到本地规则答疑，并附一句提示，绝不抛异常中断白板使用。
+        """
+        try:
+            raw = _http_post_json(
+                self.endpoint,
+                {"question": question, "context": context},
+                api_key=self.api_key,
+                timeout=self.timeout,
+            )
+            answer = _extract_answer(raw)
+            if not answer:
+                return ("[远程后端未返回有效答复，已回退本地答疑]\n"
+                        + self._ask_local(question, context))
+            return "[远程 AI 答疑]\n" + answer
+        except Exception as exc:  # noqa: BLE001 —— 主动兜底，降级而非崩溃
+            return ("[远程后端不可用，已回退本地答疑：%s]\n" % _safe_msg(exc)
+                    + self._ask_local(question, context))
+
+
+def _http_post_json(url, payload, api_key=None, timeout=8.0):
+    """用标准库 urllib 发送 JSON POST，返回解码后的响应体（str）。
+
+    仅依赖 Python 3.7 标准库，不引入 requests 等第三方依赖，保证兼容性。
+    任何网络 / 超时 / HTTP 错误都会抛出，由调用方决定如何降级。
+    """
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        method="POST",
+        headers={
+            "Content-Type": "application/json",
+            "Accept": "application/json, text/plain",
+        },
+    )
+    if api_key:
+        req.add_header("Authorization", "Bearer %s" % api_key)
+    # urlopen 在 4xx/5xx 时抛 HTTPError（URLError 子类），统一交由调用方降级
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", "replace")
+
+
+def _extract_answer(raw):
+    """从响应体稳健提取答复文本。
+
+    兼容三种常见格式：
+    - 纯文本
+    - JSON {"answer": "..."}
+    - OpenAI 风格 {"choices":[{"message":{"content":"..."}}]}
+    解析失败或字段缺失时退化为原始文本（兜底），空响应返回 ""。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    try:
+        obj = json.loads(text)
+    except (ValueError, TypeError):
+        return text
+    if isinstance(obj, dict):
+        if "answer" in obj and obj["answer"]:
+            return str(obj["answer"])
+        choices = obj.get("choices")
+        if isinstance(choices, list) and choices:
+            msg = (choices[0] or {}).get("message") or {}
+            content = msg.get("content")
+            if content:
+                return str(content)
+        # 兜底：取第一个看起来像正文的字符串值
+        for value in obj.values():
+            if isinstance(value, str) and value.strip():
+                return value
+    return text
+
+
+def _safe_msg(exc):
+    """把异常转成一句话文案（网络错误常无友好 str，回退到类名）。"""
+    return str(exc) or exc.__class__.__name__
