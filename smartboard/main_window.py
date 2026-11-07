@@ -291,8 +291,10 @@ class MainWindow(QMainWindow):
         question, ok = QInputDialog.getText(self, "AI 教学答疑", "请输入你的问题：")
         if not ok or not question.strip():
             return
-        context = board_dict_to_text(self.board.scene().to_dict())
-        answer = self._ai.ask(question.strip(), context)
+        board_dict = self.board.scene().to_dict()
+        context = board_dict_to_text(board_dict)
+        # 同时传入结构化白板，使本地答疑「板面感知」、远程请求带上 stats 上下文
+        answer = self._ai.ask(question.strip(), context, board=board_dict)
         QMessageBox.information(
             self, "AI 教学答疑", answer + "\n\n--- 白板快照 ---\n" + context
         )

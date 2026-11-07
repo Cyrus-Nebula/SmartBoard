@@ -15,7 +15,9 @@ from PySide6.QtGui import QColor  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from smartboard.whiteboard import WhiteboardScene, Stroke  # noqa: E402
-from smartboard.ai_link import AITeacher, board_dict_to_text  # noqa: E402
+from smartboard.ai_link import (  # noqa: E402
+    AITeacher, board_dict_to_text, analyze_board,
+)
 
 _QAPP = QApplication.instance() or QApplication([])
 
@@ -166,6 +168,97 @@ class TestRemoteBackend(unittest.TestCase):
         self.assertIn("已回退本地答疑", ans)
         self.assertIn("network down", ans)
         self.assertIn("题目？", ans)
+
+
+class TestAnalyzeBoard(unittest.TestCase):
+    """验证新增的结构化白板统计（无 GUI 依赖、确定性）。"""
+
+    def test_empty(self):
+        s = analyze_board({})
+        self.assertTrue(s["empty"])
+        self.assertEqual(s["total"], 0)
+        self.assertEqual(s["dominant_color"], None)
+
+    def test_counts_normal_and_eraser(self):
+        board = {"strokes": [
+            {"color": "#1A1A1A", "width": 4, "points": [[0, 0]]},
+            {"color": "#E53935", "width": 6, "eraser": False, "points": [[1, 1]]},
+            {"color": "#1A1A1A", "width": 2, "eraser": True, "points": [[2, 2]]},
+        ]}
+        s = analyze_board(board)
+        self.assertEqual(s["total"], 3)
+        self.assertEqual(s["normal"], 2)
+        self.assertEqual(s["eraser"], 1)
+        # 仅普通笔迹计入配色：第 3 条是橡皮擦，其颜色不进入 colors
+        self.assertEqual(s["colors"].get("#1a1a1a"), 1)
+        self.assertEqual(s["colors"].get("#e53935"), 1)
+        self.assertEqual(s["dominant_color"], "#1a1a1a")
+
+    def test_three_digit_color_expanded(self):
+        board = {"strokes": [{"color": "#FFF", "width": 4, "points": [[0, 0]]}]}
+        s = analyze_board(board)
+        self.assertEqual(s["colors"].get("#ffffff"), 1)
+
+    def test_invalid_stroke_skipped(self):
+        board = {"strokes": ["not a dict",
+                             {"color": "#000", "width": 4, "points": [[0, 0]]}]}
+        s = analyze_board(board)
+        self.assertEqual(s["total"], 1)
+        self.assertEqual(s["normal"], 1)
+
+
+class TestEnrichedLocal(unittest.TestCase):
+    """验证本地答疑升级为「板面感知」：依据真实统计给出有针对性的提示。"""
+
+    def test_board_aware_local_answer(self):
+        ai = AITeacher()
+        board = {"strokes": [
+            {"color": "#1A1A1A", "width": 4, "points": [[0, 0]]},
+            {"color": "#E53935", "width": 6, "points": [[1, 1]]},
+        ]}
+        ans = ai.ask("什么是函数？", board_dict_to_text(board), board=board)
+        self.assertIn("什么是函数？", ans)
+        self.assertIn("2", ans)               # 总条数
+        self.assertIn("#1a1a1a", ans)         # 配色被纳入答复
+        self.assertIn("#e53935", ans)
+
+    def test_empty_board_local_hint(self):
+        ai = AITeacher()
+        ans = ai.ask("讲什么？", "(空白白板)", board={"strokes": []})
+        self.assertIn("为空", ans)
+        self.assertIn("讲什么？", ans)
+
+    def test_eraser_and_colors_in_answer(self):
+        ai = AITeacher()
+        board = {"strokes": [
+            {"color": "#1A1A1A", "width": 4, "points": [[0, 0]]},
+            {"color": "#E53935", "width": 6, "points": [[1, 1]]},
+            {"color": "#1A1A1A", "width": 2, "eraser": True, "points": [[2, 2]]},
+        ]}
+        ans = ai.ask("这题怎么讲", board_dict_to_text(board), board=board)
+        self.assertIn("橡皮修正", ans)         # 含 1 处橡皮修正
+        self.assertIn("2 种颜色", ans)          # 使用 2 种颜色分层标注
+
+
+class TestRemoteStats(unittest.TestCase):
+    """验证远程请求在传入 board 时携带结构化 stats 上下文。"""
+
+    def test_remote_payload_includes_stats(self):
+        from unittest import mock
+
+        captured = {}
+
+        def fake_post(url, payload, api_key=None, timeout=8.0):
+            captured["payload"] = payload
+            return '{"answer": "ok"}'
+
+        ai = AITeacher(endpoint="https://api.example/ai", api_key="k")
+        board = {"strokes": [{"color": "#000", "width": 4, "points": [[0, 0]]}]}
+        with mock.patch("smartboard.ai_link._http_post_json", side_effect=fake_post):
+            ai.ask("q?", board_dict_to_text(board), board=board)
+        self.assertIn("stats", captured["payload"])
+        self.assertEqual(captured["payload"]["stats"]["total"], 1)
+        self.assertEqual(captured["payload"]["stats"]["normal"], 1)
 
 
 if __name__ == "__main__":
