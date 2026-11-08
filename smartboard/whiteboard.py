@@ -158,6 +158,11 @@ class WhiteboardScene(QGraphicsScene):
         self._redo = []                    # 撤销栈
         self._z_counter = 0                # 单调递增 z 计数器（决定层叠顺序）
 
+        # 清空/载入覆盖前的笔迹快照，用于「撤销清空 / 撤销载入」整批恢复，
+        # 杜绝 Ctrl+L 误清或误载后板书无法恢复的数据丢失风险（与既有逐条撤销互补）。
+        self._cleared = []                 # 被清空/覆盖的笔迹（绘制顺序）
+        self._cleared_z = 0                # 清空/覆盖前的 z 计数器，恢复后继续递增
+
         # 书写辅助网格（默认关闭，对既有书写/橡皮擦/序列化/导出零侵入）
         self._grid_enabled = False
         self._grid_size = 40.0             # 网格间距（场景坐标，px）
@@ -168,7 +173,8 @@ class WhiteboardScene(QGraphicsScene):
         return len(self._strokes)
 
     def can_undo(self):
-        return len(self._strokes) > 0
+        # 有笔迹可逐条撤销，或刚被清空/载入覆盖的板面可整批恢复（Ctrl+Z 防误清）
+        return len(self._strokes) > 0 or len(self._cleared) > 0
 
     def can_redo(self):
         return len(self._redo) > 0
@@ -208,13 +214,29 @@ class WhiteboardScene(QGraphicsScene):
         return stroke
 
     def undo(self):
-        if not self._strokes:
-            return False
-        s = self._strokes.pop()
-        self._detach(s)
-        self._redo.append(s)
-        self.strokesChanged.emit()
-        return True
+        if self._strokes:
+            # 逐条撤销：取最近一笔，摘下并放入重做栈
+            s = self._strokes.pop()
+            self._detach(s)
+            self._redo.append(s)
+            self.strokesChanged.emit()
+            return True
+        if self._cleared:
+            # 撤销「清空 / 载入覆盖」：整批恢复被清掉的笔迹（保留各自 z），
+            # 先清掉场景里现有的图元（含载入/新画内容），再以原 z 挂回。
+            self.clear()
+            restored = self._cleared
+            z = self._cleared_z
+            self._cleared = []
+            self._strokes = []
+            self._items = {}
+            self._stroke_of = {}
+            self._z_counter = z
+            for s in restored:
+                self._attach(s)   # 已提交笔迹必有 _z，不会重新分配
+            self.strokesChanged.emit()
+            return True
+        return False
 
     def remove_stroke(self, stroke):
         """删除指定笔迹（整条移除），可用于右键精确擦除。
@@ -239,6 +261,12 @@ class WhiteboardScene(QGraphicsScene):
         return True
 
     def clear_all(self):
+        if not self._strokes:
+            return
+        # 快照当前笔迹，使「清空」可被 Ctrl+Z 整批撤销（防误清数据丢失）。
+        # 载入覆盖（load_dict）也会走到这里，因此误载同样可一键还原。
+        self._cleared = self._strokes[:]
+        self._cleared_z = self._z_counter
         self.clear()
         self._strokes = []
         self._items = {}
@@ -326,6 +354,11 @@ class WhiteboardScene(QGraphicsScene):
         self.clear_all()
         for s in parsed:
             self._attach(s)
+        # 载入是「显式替换」操作（损坏文件已被原子性保护拦截），不把它变成
+        # 两步撤销（先删载入内容、再还原旧板面），故清空「可撤销清空」快照，
+        # 让载入成为干净的基线；撤销仍按逐条作用于载入的笔迹。
+        self._cleared = []
+        self._cleared_z = 0
         # clear_all 已置空并发射过一次，这里在所有笔迹挂上后再发一次，
         # 保证界面在「载入」操作后拿到最终正确状态。
         self.strokesChanged.emit()

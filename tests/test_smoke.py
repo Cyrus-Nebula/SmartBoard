@@ -243,7 +243,8 @@ class ToolbarStateTest(unittest.TestCase):
         self.assertTrue(win._undo_act.isEnabled())
 
         win.board.scene().clear_all()
-        self.assertFalse(win._undo_act.isEnabled())
+        # 清空现已可撤销（Ctrl+Z 防误清）：撤销按钮应可用，清空按钮因空白板禁用
+        self.assertTrue(win._undo_act.isEnabled())
         self.assertFalse(win._clear_act.isEnabled())
 
         win.close()
@@ -1209,6 +1210,159 @@ class RobustLoadTest(unittest.TestCase):
         # 合法的第一条也未被挂入（无半途提交）
         self.assertEqual(scene.count(), before)
         self.assertEqual(len(scene._items), before)
+
+
+class ClearUndoTest(unittest.TestCase):
+    """验证「清空」可整批撤销：杜绝 Ctrl+L 误清后板书无法恢复的数据丢失风险。
+
+    背景与修复：旧实现 clear_all 直接丢弃当前笔迹且清空重做栈，清空后无法撤销，
+    课堂误按 Ctrl+L 会永久抹掉板书。新实现在清空前快照笔迹，Ctrl+Z 整批恢复，
+    且恢复后保留各自 z、可继续在其之上书写；载入覆盖同样可一键还原。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _win(self):
+        self._app()
+        return MainWindow()
+
+    def test_clear_then_undo_restores_count_and_content(self):
+        """清空后撤销应整批恢复笔迹数量与内容（含颜色/橡皮属性）。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("#1A1A1A"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        scene.add_stroke(Stroke(QColor("#E53935"), 6,
+                                [QPointF(1, 1), QPointF(9, 9)], eraser=True))
+        self.assertEqual(scene.count(), 2)
+        self.assertTrue(scene.can_undo())
+
+        scene.clear_all()
+        self.assertEqual(scene.count(), 0)            # 清空生效
+        self.assertTrue(scene.can_undo())             # 清空可撤销（关键不变量）
+
+        self.assertTrue(scene.undo())                 # Ctrl+Z 整批恢复
+        self.assertEqual(scene.count(), 2)            # 数量还原
+        self.assertAlmostEqual(scene._strokes[0].points[0].x(), 0.0, delta=1e-9)
+        self.assertTrue(scene._strokes[1].eraser)     # 橡皮属性还原
+
+    def test_clear_then_undo_preserves_z(self):
+        """清空后撤销恢复的笔迹应保持原 z（层叠顺序不变）。"""
+        self._app()
+        scene = WhiteboardScene()
+        a = Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)])
+        b = Stroke(QColor("red"), 4, [QPointF(6, 6), QPointF(9, 9)])
+        scene.add_stroke(a)
+        scene.add_stroke(b)
+        za, zb = scene._items[a].zValue(), scene._items[b].zValue()
+
+        scene.clear_all()
+        self.assertTrue(scene.undo())
+        self.assertEqual(scene._items[a].zValue(), za)
+        self.assertEqual(scene._items[b].zValue(), zb)
+        self.assertLess(scene._items[a].zValue(), scene._items[b].zValue())
+
+    def test_clear_then_undo_continues_z_counter(self):
+        """清空后恢复再继续书写：新笔迹 z 应接在被恢复笔迹之后，不与其冲突。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0)]))
+        scene.add_stroke(Stroke(QColor("red"), 4, [QPointF(1, 1)]))
+        scene.clear_all()
+        self.assertTrue(scene.undo())
+
+        # 在恢复后的板面上继续书写，新笔迹 z 应 >= 已有最大 z
+        new_s = Stroke(QColor("blue"), 4, [QPointF(2, 2)])
+        scene.add_stroke(new_s)
+        max_z = max(it.zValue() for it in scene._items.values())
+        self.assertGreaterEqual(scene._items[new_s].zValue(), max_z - 1e-9)
+        self.assertEqual(scene.count(), 3)
+
+    def test_clear_empty_board_is_noop(self):
+        """空白板清空应为无操作：不设置可撤销快照、can_undo 保持 False。"""
+        self._app()
+        scene = WhiteboardScene()
+        self.assertFalse(scene.can_undo())
+        scene.clear_all()
+        self.assertEqual(scene.count(), 0)
+        self.assertFalse(scene.can_undo())
+        self.assertFalse(scene.undo())
+
+    def test_double_clear_still_undoable(self):
+        """连续两次清空不应崩溃，且仍可整批撤销到最初内容。"""
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0)]))
+        scene.clear_all()
+        scene.clear_all()                 # 第二次清空：旧快照被新（空）覆盖
+        self.assertTrue(scene.can_undo())
+        self.assertTrue(scene.undo())
+        self.assertEqual(scene.count(), 1)
+        self.assertAlmostEqual(scene._strokes[0].points[0].x(), 0.0, delta=1e-9)
+
+    def test_clear_button_state_after_clear(self):
+        """清空后：清空按钮因空白板禁用，但撤销按钮可用（可一键还原）。"""
+        self._app()
+        win = self._win()
+        win.board.scene().add_stroke(
+            Stroke(QColor("#1E88E5"), 6, [QPointF(0, 0), QPointF(10, 10)]))
+        self.assertTrue(win._undo_act.isEnabled())
+        self.assertTrue(win._clear_act.isEnabled())
+
+        win.board.scene().clear_all()
+        self.assertTrue(win._undo_act.isEnabled())     # 可撤销：防误清
+        self.assertFalse(win._clear_act.isEnabled())   # 空白板不可再清空
+        win.close()
+
+    def test_clear_shortcut_then_undo_shortcut_restores(self):
+        """端到端：Ctrl+L 清空后用 Ctrl+Z 真实快捷键整批恢复。"""
+        from PySide6.QtGui import QShortcut
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        win = self._win()
+        win.show()
+        scene = win.board.scene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        self.assertEqual(scene.count(), 1)
+
+        clear_sc = next(s for s in win.findChildren(QShortcut)
+                        if s.key().toString() == "Ctrl+L")
+        clear_sc.activated.emit()
+        self.assertEqual(scene.count(), 0)
+
+        undo_sc = next(s for s in win.findChildren(QShortcut)
+                       if s.key().toString() == "Ctrl+Z")
+        undo_sc.activated.emit()
+        self.assertEqual(scene.count(), 1)            # 整批恢复
+        win.close()
+
+    def test_load_is_clean_replace(self):
+        """载入是显式替换：覆盖旧内容且不遗留「可撤销清空」快照（避免两步撤销）。
+
+        载入已有原子性保护（损坏文件不丢盘），此处仅确认成功载入后：
+        旧笔迹被替换、_cleared 快照被清空（undo 不会离奇还原旧板面）。
+        """
+        self._app()
+        scene = WhiteboardScene()
+        scene.add_stroke(Stroke(QColor("black"), 4, [QPointF(0, 0), QPointF(5, 5)]))
+        self.assertEqual(scene.count(), 1)
+
+        scene.load_dict({"version": 1, "strokes": [
+            {"color": "#E53935", "width": 6, "points": [[1, 1], [9, 9]]}]})
+        self.assertEqual(scene.count(), 1)
+        self.assertEqual(scene._strokes[0].color.name().upper(), "#E53935")
+        # 关键不变量：载入作为干净基线，不应遗留可撤销清空的快照
+        self.assertEqual(scene._cleared, [])
+        self.assertTrue(scene.can_undo())    # 载入的 1 条笔迹本身可逐条撤销
+        self.assertFalse(scene.can_redo())
+
+        # 撤销按逐条作用于载入的笔迹（而非还原旧板面）
+        self.assertTrue(scene.undo())
+        self.assertEqual(scene.count(), 0)
+        self.assertFalse(scene.can_undo())
 
 
 if __name__ == "__main__":
