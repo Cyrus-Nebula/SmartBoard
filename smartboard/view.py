@@ -101,6 +101,25 @@ class WhiteboardView(QGraphicsView):
         # 缩放归 1：预览环直径回到「线宽 == 屏幕像素」的原始状态
         self._sync_cursor()
 
+    def fit_to_content(self, padding=40.0):
+        """缩放并平移视图，使所有笔迹内容刚好铺满视口（教学时一键总览整块板书）。
+
+        仅作用于「视图变换」，不改动场景数据、笔迹、预览环与导出，因此对既有
+        书写、橡皮擦、序列化与 PNG 导出管线完全零侵入。空白板或视口尺寸无效时
+        退化为 reset_view（原点居中、缩放归 1），保持行为可预期。
+        """
+        if self.scene().count() == 0 or self.viewport().rect().isEmpty():
+            self.reset_view()
+            return
+        rect = self.content_rect(padding)
+        if rect.isNull() or rect.isEmpty():
+            self.reset_view()
+            return
+        # KeepAspectRatio 保证总览时不拉伸变形；fitInView 会改写变换矩阵，
+        # 触发 transformChanged 信号（主窗口据此刷新状态栏缩放百分比），并同步预览环。
+        self.fitInView(rect, Qt.KeepAspectRatio)
+        self._sync_cursor()
+
     def wheelEvent(self, event):
         """滚轮缩放：以光标为锚点平滑缩放（教学时放大细节、缩小总览）。"""
         delta = event.angleDelta().y()

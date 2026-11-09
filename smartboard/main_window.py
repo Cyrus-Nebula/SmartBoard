@@ -48,6 +48,14 @@ class MainWindow(QMainWindow):
         self._refresh_color_buttons()
         self._refresh_actions()
 
+        # 视图变换（缩放 / 适应内容）时同步刷新状态栏缩放百分比；
+        # transformChanged 为 Qt 5.14+ 公共信号，PySide6 6.2.4 已具备。
+        # 用 try 包一层以兼容更老环境，缺失该信号也不影响其余功能。
+        try:
+            self.board.transformChanged.connect(self._update_status)
+        except Exception:
+            pass
+
     # -- 工具栏 --
     def _build_toolbar(self):
         tb = QToolBar("工具", self)
@@ -101,6 +109,7 @@ class MainWindow(QMainWindow):
         self._add_action(tb, "载入", self._load)
         self._add_action(tb, "导出图片", self._export)
         self._add_action(tb, "重置视图", self.board.reset_view)
+        self._add_action(tb, "适应内容", self.board.fit_to_content)
 
         tb.addSeparator()
 
@@ -144,10 +153,17 @@ class MainWindow(QMainWindow):
             color_part = " | 颜色 " + self._active_color
         width_part = " | 线宽 %dpx" % self.board.pen_width
         grid_part = " | 网格 开" if self.board.is_grid_enabled() else " | 网格 关"
+        # 实时缩放百分比：屏幕像素 ↔ 场景坐标的缩放系数 ×100（默认 100%）。
+        # 只读视图变换矩阵，不改变任何笔迹/状态，完全无副作用。
+        scale = self.board.transform().m11()
+        if scale <= 0.0:
+            scale = 1.0
+        zoom_part = " | 缩放 %d%%" % int(round(scale * 100.0))
         undo = "可撤销" if scene.can_undo() else "不可撤销"
         redo = "可重做" if scene.can_redo() else "不可重做"
-        text = "工具：%s%s%s%s | 笔迹 %d 条 | %s | %s" % (
-            tool, color_part, width_part, grid_part, scene.count(), undo, redo,
+        text = "工具：%s%s%s%s%s | 笔迹 %d 条 | %s | %s" % (
+            tool, color_part, width_part, grid_part, zoom_part,
+            scene.count(), undo, redo,
         )
         self._status_label.setText(text)
 
@@ -189,6 +205,7 @@ class MainWindow(QMainWindow):
         add("Ctrl++", lambda: self.board.zoomBy(1.1))           # 放大
         add("Ctrl+-", lambda: self.board.zoomBy(1.0 / 1.1))      # 缩小
         add("Ctrl+0", self.board.reset_view)                     # 复位视图
+        add("Ctrl+F", self.board.fit_to_content)                 # 适应内容（一键总览整块板书）
         add("G", lambda: self._toggle_grid(not self.board.is_grid_enabled()))  # 网格开关
 
     # -- 状态联动 --

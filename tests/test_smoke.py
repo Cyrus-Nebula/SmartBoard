@@ -1365,6 +1365,115 @@ class ClearUndoTest(unittest.TestCase):
         self.assertFalse(scene.can_undo())
 
 
+class FitAndZoomStatusTest(unittest.TestCase):
+    """验证新增的「适应内容」一键总览 + 状态栏实时缩放百分比。
+
+    两项改进均仅作用于视图变换，不触碰场景笔迹/橡皮/序列化/导出，因此：
+    - 适配内容前后笔迹数不变、点集不变；
+    - 状态栏缩放百分比随视图缩放实时更新；
+    - 空白板适配内容退化为复位（100%）。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _win(self):
+        self._app()
+        win = MainWindow()
+        win.resize(800, 600)
+        win.show()
+        return win
+
+    def test_status_shows_zoom_100_initial(self):
+        """初始视图缩放为 1，状态栏应显示「缩放 100%」。"""
+        win = self._win()
+        self.assertIn("缩放 100%", win._status_label.text())
+        win.close()
+
+    def test_zoom_updates_status_percentage(self):
+        """缩放后状态栏百分比应同步（zoomBy 改变变换 → transformChanged → 刷新）。"""
+        win = self._win()
+        win.board.zoomBy(2.0)
+        # 明确触发一次刷新，确保即使信号在测试环境下未自动传播，缩放百分比也能反映真实变换
+        win._update_status()
+        self.assertIn("缩放 200%", win._status_label.text())
+        # 复位后回到 100%
+        win.board.reset_view()
+        win._update_status()
+        self.assertIn("缩放 100%", win._status_label.text())
+        win.close()
+
+    def test_fit_to_content_changes_scale_keeps_strokes(self):
+        """适配内容：视图缩放改变（总览小图会放大），但笔迹数/点集不受影响。"""
+        self._app()
+        win = MainWindow()
+        win.resize(800, 600)
+        win.show()
+        view = win.board
+        view.resize(600, 400)
+        view.show()
+        QApplication.instance().processEvents()
+
+        s = Stroke(QColor("#1A1A1A"), 6,
+                   [QPointF(0, 0), QPointF(120, 40), QPointF(60, 80)])
+        view.scene().add_stroke(s)
+        pts_before = [QPointF(p) for p in s.points]
+        self.assertEqual(view.scene().count(), 1)
+
+        view.fit_to_content()
+        QApplication.instance().processEvents()
+
+        # 笔迹数、点集零侵入
+        self.assertEqual(view.scene().count(), 1)
+        self.assertEqual(len(view.scene()._strokes[0].points), len(pts_before))
+        for a, b in zip(view.scene()._strokes[0].points, pts_before):
+            self.assertAlmostEqual(a.x(), b.x(), delta=1e-9)
+            self.assertAlmostEqual(a.y(), b.y(), delta=1e-9)
+
+        # 视图变换确实发生了改变（不再是 100%）
+        self.assertNotAlmostEqual(view.transform().m11(), 1.0, delta=1e-6)
+        win._update_status()
+        self.assertNotIn("缩放 100%", win._status_label.text())
+        win.close()
+
+    def test_fit_empty_resets_to_100(self):
+        """空白板适配内容应退化为复位：缩放归 1、状态栏 100%。"""
+        self._app()
+        win = MainWindow()
+        win.resize(800, 600)
+        win.show()
+        view = win.board
+        view.resize(600, 400)
+        view.show()
+        QApplication.instance().processEvents()
+
+        self.assertEqual(view.scene().count(), 0)
+        view.fit_to_content()
+        QApplication.instance().processEvents()
+        self.assertAlmostEqual(view.transform().m11(), 1.0, delta=1e-6)
+        win._update_status()
+        self.assertIn("缩放 100%", win._status_label.text())
+        win.close()
+
+    def test_fit_shortcut_registered(self):
+        """Ctrl+F 快捷键应已注册并绑定到适配内容。"""
+        from PySide6.QtGui import QShortcut
+        win = self._win()
+        registered = {sc.key().toString() for sc in win.findChildren(QShortcut)}
+        self.assertIn("Ctrl+F", registered)
+
+        # 发射快捷键信号，确定性验证其确实调用了 fit_to_content（空白板→复位→100%）
+        fit_sc = next(s for s in win.findChildren(QShortcut)
+                      if s.key().toString() == "Ctrl+F")
+        win.board.zoomBy(1.8)
+        fit_sc.activated.emit()
+        QApplication.instance().processEvents()
+        self.assertAlmostEqual(win.board.transform().m11(), 1.0, delta=1e-6)
+        win.close()
+
+
 if __name__ == "__main__":
     prog = unittest.main(verbosity=2, exit=False)
     # 测试已产出结论；在解释器终析前主动清理并以正确退出码结束，
