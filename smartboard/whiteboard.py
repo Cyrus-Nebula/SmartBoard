@@ -106,36 +106,210 @@ def build_smooth_path(points):
 
 
 # ---------------------------------------------------------------------------
+# 自然笔（速度感知变宽）：让笔迹随书写速度变化粗细，模拟真实钢笔/毛笔手感。
+# 设计要点（兼容 Python 3.7 / PySide6 6.2.4，纯标准库 + Qt 公共 API）：
+# - 速度→宽度映射是纯函数，不依赖 GUI，可单元覆盖、确定可复现；
+# - 变宽笔迹用「中心线偏移成闭合轮廓 + 填充」渲染（而非恒定宽度的 QPen），
+#   这是变宽描边的标准做法，对既有固定宽度笔迹、橡皮擦、序列化、导出零侵入；
+# - 该特性默认关闭（工具栏「自然笔」开关），因此不改写任何既有默认行为，
+#   老白板文件（无 half_widths）载入后仍是原来的固定宽度笔迹。
+# ---------------------------------------------------------------------------
+
+def compute_half_widths(points, times, base_width, min_factor=0.45,
+                        max_factor=1.0, soft=1.2, smooth_widths=True):
+    """根据采样点的时间戳估算每一点的半宽（场景坐标，px），实现"慢笔粗、快笔细"。
+
+    - points：QPointF 采样点（场景坐标）；
+    - times：与 points 等长的时间戳（毫秒，如 QInputEvent.timestamp()）；
+    - base_width：画笔基准线宽（场景坐标，px）；
+    - 速度 speed = 相邻点距离 / 时间间隔（px/ms），越慢 speed 越小；
+    - 因子 factor = max_factor - (max_factor - min_factor) * speed/(speed+soft)：
+      静止(speed=0)→factor=max_factor（最粗）；极快→factor→min_factor（最细）；
+      soft 为半饱和常数（px/ms），决定"多快开始变细"。
+    - 返回与 points 等长的半宽列表（= base_width*factor/2），可直接送入轮廓构造。
+    纯函数、无副作用，便于单元验证「慢→更粗、快→更细」的单调性。
+    """
+    n = len(points)
+    if n == 0:
+        return []
+    hw = [0.0] * n
+    prev_speed = 0.0
+    for i in range(n):
+        if i == 0:
+            speed = 0.0
+        else:
+            dt = times[i] - times[i - 1]   # 毫秒
+            if dt <= 0:
+                speed = prev_speed          # 时间为 0/负：沿用上一速度，避免除零
+            else:
+                dx = points[i].x() - points[i - 1].x()
+                dy = points[i].y() - points[i - 1].y()
+                dist = (dx * dx + dy * dy) ** 0.5
+                speed = dist / dt           # px/ms
+        prev_speed = speed
+        factor = max_factor - (max_factor - min_factor) * (speed / (speed + soft))
+        hw[i] = (float(base_width) * factor) / 2.0
+    if smooth_widths and n >= 3:
+        hw = _moving_avg(hw, 1)
+    return hw
+
+
+def _moving_avg(values, radius):
+    """对列表做半径为 radius 的滑动平均（端点夹到边界），平滑宽度抖动。"""
+    n = len(values)
+    out = [0.0] * n
+    for i in range(n):
+        lo = max(0, i - radius)
+        hi = min(n - 1, i + radius)
+        total = 0.0
+        count = 0
+        for j in range(lo, hi + 1):
+            total += values[j]
+            count += 1
+        out[i] = total / count
+    return out
+
+
+def build_variable_width_path(center, half_widths):
+    """把「中心线 + 逐点半宽」构造为可填充的闭合轮廓路径（变宽描边）。
+
+    对每个顶点沿其局部切线法线方向左右各偏移半宽，得到 left/right 两条边，
+    首尾连成闭合多边形后用画刷填充，即得随速度变化粗细的笔迹。
+    - 单点：退化为一个填充圆点（落笔点）；
+    - 两点及以上：左右偏移轮廓；
+    - half_widths 与 center 长度不一致或为空时安全退化为折线，绝不抛异常。
+    """
+    path = QPainterPath()
+    n = len(center)
+    if n == 0:
+        return path
+    if len(half_widths) != n:
+        return build_polyline(center)
+    if n == 1:
+        r = max(0.1, half_widths[0])
+        c = center[0]
+        path.addEllipse(c.x() - r, c.y() - r, 2.0 * r, 2.0 * r)
+        return path
+    left = []
+    right = []
+    for i in range(n):
+        if i == 0:
+            t = center[1] - center[0]
+        elif i == n - 1:
+            t = center[n - 1] - center[n - 2]
+        else:
+            t = center[i + 1] - center[i - 1]
+        tx, ty = t.x(), t.y()
+        length = (tx * tx + ty * ty) ** 0.5
+        if length == 0.0:
+            nx, ny = 1.0, 0.0
+        else:
+            nx, ny = -ty / length, tx / length
+        hw = max(0.0, half_widths[i])
+        left.append(QPointF(center[i].x() + nx * hw, center[i].y() + ny * hw))
+        right.append(QPointF(center[i].x() - nx * hw, center[i].y() - ny * hw))
+    path.moveTo(left[0])
+    for p in left[1:]:
+        path.lineTo(p)
+    for p in reversed(right):
+        path.lineTo(p)
+    path.closeSubpath()
+    return path
+
+
+def simplify_with_meta(points, meta, epsilon=SIMPLIFY_EPSILON):
+    """与 simplify_points 等价的 RDP 抽稀，但同步保留并抽掉并行的 meta（如时间戳）。
+
+    返回 (保留点列表, 保留 meta 列表)。点数 <= 2 或 epsilon <= 0 时原样返回副本，
+    保证确定性；用于变宽笔迹提交时让「点」与「时间戳」保持一一对应。
+    """
+    if epsilon <= 0 or len(points) <= 2:
+        return [QPointF(p) for p in points], (list(meta) if meta is not None else None)
+    pts = [QPointF(p) for p in points]
+    keep = [False] * len(pts)
+    keep[0] = keep[-1] = True
+    meta_kept = (list(meta) if meta is not None else None)
+    stack = [(0, len(pts) - 1)]
+    while stack:
+        start, end = stack.pop()
+        a, b = pts[start], pts[end]
+        dmax, index = 0.0, -1
+        for i in range(start + 1, end):
+            d = _perp_distance(pts[i], a, b)
+            if d > dmax:
+                dmax, index = d, i
+        if dmax > epsilon and index != -1:
+            keep[index] = True
+            stack.append((start, index))
+            stack.append((index, end))
+    kept_pts = [p for i, p in enumerate(pts) if keep[i]]
+    kept_meta = [meta_kept[i] for i in range(len(pts)) if keep[i]] if meta_kept is not None else None
+    return kept_pts, kept_meta
+
+
+# ---------------------------------------------------------------------------
 # 笔迹数据模型
 # ---------------------------------------------------------------------------
 
 class Stroke:
-    """一条笔迹：颜色、线宽、采样点序列、是否为橡皮擦。"""
+    """一条笔迹：颜色、线宽、采样点序列、是否为橡皮擦。
 
-    def __init__(self, color, width, points, eraser=False):
-        # type: (QColor, int, list, bool) -> None
+    可选 half_widths：与 points 等长的逐点半宽列表（场景坐标，px），用于「自然笔」
+    速度感知变宽。为 None 时退化为固定宽度（与旧行为一致），保证老文件向后兼容。
+    """
+
+    def __init__(self, color, width, points, eraser=False, half_widths=None):
+        # type: (QColor, int, list, bool, list) -> None
         self.color = QColor(color)
         self.width = int(width)
         self.points = [QPointF(p) for p in points]
         self.eraser = bool(eraser)
+        # 仅当长度匹配 points 时才视为有效变宽笔迹，避免脏数据导致渲染异常
+        if half_widths is not None and len(half_widths) == len(self.points):
+            self._half_widths = [float(h) for h in half_widths]
+        else:
+            self._half_widths = None
+
+    def uses_variable_width(self):
+        """是否为速度感知变宽笔迹（决定用填充轮廓渲染还是恒定宽度 QPen）。"""
+        return (
+            self._half_widths is not None
+            and len(self._half_widths) == len(self.points)
+            and len(self.points) > 0
+        )
 
     def to_path(self, smooth=True):
+        if self.uses_variable_width():
+            return build_variable_width_path(self.points, self._half_widths)
         if smooth:
             return build_smooth_path(self.points)
         return build_polyline(self.points)
 
     def to_dict(self):
-        return {
+        d = {
             "color": self.color.name(),  # 形如 "#1a1a1a"
             "width": self.width,
             "eraser": self.eraser,
             "points": [[round(p.x(), 3), round(p.y(), 3)] for p in self.points],
         }
+        # 变宽笔迹序列化逐点半宽（场景坐标，3 位小数）；固定宽度笔迹省略以兼容旧文件
+        if self._half_widths is not None:
+            d["half_widths"] = [round(h, 3) for h in self._half_widths]
+        return d
 
     @classmethod
     def from_dict(cls, d):
         pts = [QPointF(x, y) for x, y in d.get("points", [])]
-        return cls(d.get("color", "#000000"), d.get("width", 4), pts, d.get("eraser", False))
+        hw = d.get("half_widths")
+        if hw:
+            hw = [float(x) for x in hw]
+        return cls(
+            d.get("color", "#000000"),
+            d.get("width", 4),
+            pts,
+            d.get("eraser", False),
+            half_widths=hw,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -183,9 +357,16 @@ class WhiteboardScene(QGraphicsScene):
     def _attach(self, stroke):
         item = QGraphicsPathItem()
         item.setPath(stroke.to_path(smooth=True))
-        pen_color = self._bg if stroke.eraser else stroke.color
-        pen = QPen(pen_color, stroke.width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        item.setPen(pen)
+        if stroke.uses_variable_width():
+            # 变宽笔迹：用「填充轮廓」渲染（画刷着色、无描边），
+            # 橡皮擦模式则用背景色填充以"擦除"其下方笔迹。
+            color = self._bg if stroke.eraser else stroke.color
+            item.setBrush(QBrush(color))
+            item.setPen(Qt.NoPen)
+        else:
+            pen_color = self._bg if stroke.eraser else stroke.color
+            pen = QPen(pen_color, stroke.width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
+            item.setPen(pen)
         # 按「绘制顺序」分配单调递增 z：橡皮擦与普通笔迹一视同仁。
         # 这样橡皮只遮住它“之前”绘制的笔迹，而不会压住“之后”新画的笔迹，
         # 修复旧实现固定 eraser z=2 导致后画笔迹被橡皮区域遮挡的缺陷。

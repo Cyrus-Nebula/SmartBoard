@@ -9,7 +9,15 @@ from PySide6.QtCore import Qt, QPoint, QPointF, QRectF
 from PySide6.QtGui import QColor, QPen, QPainter, QPixmap, QTransform
 from PySide6.QtWidgets import QGraphicsView, QGraphicsPathItem
 
-from .whiteboard import Stroke, WhiteboardScene, simplify_points, SIMPLIFY_EPSILON
+from .whiteboard import (
+    Stroke,
+    WhiteboardScene,
+    simplify_points,
+    simplify_with_meta,
+    compute_half_widths,
+    build_variable_width_path,
+    SIMPLIFY_EPSILON,
+)
 from .pen_cursor import PenCursorOverlay
 
 
@@ -40,6 +48,10 @@ class WhiteboardView(QGraphicsView):
         # 提交笔迹时的抽稀容差（像素）；设为 0 可关闭抽稀。
         # 默认沿用手写采样 1px 量级，保证视觉一致的前提下减少存储与渲染开销。
         self.simplify_epsilon = SIMPLIFY_EPSILON
+
+        # 自然笔（速度感知变宽）：默认关闭，工具栏「自然笔」开关启用。
+        # 关闭时行为与原先完全一致（固定宽度 QPen），对既有书写/橡皮擦零侵入。
+        self.variable_width = False
 
         self._drawing = False
         self._current = None     # 正在绘制的 Stroke
@@ -145,6 +157,10 @@ class WhiteboardView(QGraphicsView):
         self.eraser = bool(on)
         self._update_cursor_visibility()
 
+    def set_variable_width(self, on):
+        """开关「自然笔」速度感知变宽：开启后笔迹随书写速度变化粗细。"""
+        self.variable_width = bool(on)
+
     # -- 书写辅助网格（委托给场景，保持视图/导出一致）--
     def set_grid_enabled(self, on):
         self.scene().set_grid_enabled(on)
@@ -203,6 +219,8 @@ class WhiteboardView(QGraphicsView):
             self._drawing = True
             pos = self.mapToScene(event.pos())
             self._current = Stroke(self.pen_color, self.pen_width, [pos], self.eraser)
+            # 记录落笔时间戳（毫秒），供「自然笔」估算书写速度→笔宽
+            self._current._times = [event.timestamp()]
             self._start_preview()
         super(WhiteboardView, self).mousePressEvent(event)
 
@@ -222,6 +240,7 @@ class WhiteboardView(QGraphicsView):
             # 阈值随缩放自适应（见 _scene_sample_threshold），放大时也采样得足够密。
             if (pos - last).manhattanLength() >= self._scene_sample_threshold():
                 self._current.points.append(pos)
+                self._current._times.append(event.timestamp())
                 self._update_preview()
         super(WhiteboardView, self).mouseMoveEvent(event)
 
@@ -253,10 +272,34 @@ class WhiteboardView(QGraphicsView):
 
         抽稀仅作用于提交给场景/序列化的点序列，预览阶段仍使用完整采样点，
         因此书写手感不变，成品笔迹在 epsilon 容差内与原轨迹视觉一致。
+        「自然笔」开启时，会依据采样时间戳估算逐点半宽，使笔迹随书写速度变化粗细。
         """
         if self._current is None:
             return
-        if len(self._current.points) >= 3 and self.simplify_epsilon > 0:
+        widths = getattr(self._current, "_half_widths", None)
+        times = getattr(self._current, "_times", None)
+        if (
+            self.variable_width
+            and widths is None
+            and times is not None
+            and len(times) == len(self._current.points)
+            and len(self._current.points) >= 1
+        ):
+            # 先按速度估算逐点半宽；若点数足够则先抽稀（点与时间戳同步抽），
+            # 再基于抽稀后的点重算半宽，保证"点—半宽"一一对应且存储精简。
+            hw = compute_half_widths(
+                self._current.points, times, self._current.width
+            )
+            if len(self._current.points) >= 3 and self.simplify_epsilon > 0:
+                pts, times = simplify_with_meta(
+                    self._current.points, times, self.simplify_epsilon
+                )
+                self._current.points = pts
+                self._current._times = times
+                hw = compute_half_widths(pts, times, self._current.width)
+            self._current._half_widths = hw
+        elif len(self._current.points) >= 3 and self.simplify_epsilon > 0:
+            # 固定宽度笔迹：仅抽稀点序列（与原行为一致）
             self._current.points = simplify_points(
                 self._current.points, self.simplify_epsilon
             )
@@ -288,7 +331,14 @@ class WhiteboardView(QGraphicsView):
         if self._preview is not None:
             self.scene().removeItem(self._preview)
         self._preview = QGraphicsPathItem()
-        self._preview.setPen(self._preview_pen())
+        # 自然笔模式下预览用「填充轮廓」实时反映变宽效果；否则沿用恒定宽度 QPen
+        if self.variable_width and self._current is not None:
+            bg = self.scene().backgroundBrush().color()
+            color = bg if self._current.eraser else self._current.color
+            self._preview.setBrush(QBrush(color))
+            self._preview.setPen(Qt.NoPen)
+        else:
+            self._preview.setPen(self._preview_pen())
         self._preview.setZValue(1)
         self.scene().addItem(self._preview)
         self._update_preview()
@@ -296,7 +346,18 @@ class WhiteboardView(QGraphicsView):
     def _update_preview(self):
         if self._preview is None or self._current is None:
             return
-        self._preview.setPath(self._current.to_path(smooth=True))
+        if self.variable_width and getattr(self._current, "_times", None):
+            # 实时按速度估算半宽并构造变宽轮廓，下笔前即可看到粗细变化
+            hw = compute_half_widths(
+                self._current.points,
+                self._current._times,
+                self._current.width,
+            )
+            self._preview.setPath(
+                build_variable_width_path(self._current.points, hw)
+            )
+        else:
+            self._preview.setPath(self._current.to_path(smooth=True))
 
     def _finish_preview(self):
         if self._preview is not None:

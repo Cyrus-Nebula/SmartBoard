@@ -120,6 +120,15 @@ class MainWindow(QMainWindow):
 
         tb.addSeparator()
 
+        # 自然笔（速度感知变宽）：开启后笔迹随书写速度变化粗细，模拟真实钢笔/毛笔手感
+        self._natural_act = self._add_action(tb, "自然笔", self._toggle_natural)
+        self._natural_act.setCheckable(True)
+        self._natural_act.setToolTip(
+            "自然笔：开启后笔迹随书写速度变化粗细（慢笔粗、快笔细），模拟真实钢笔/毛笔手感"
+        )
+
+        tb.addSeparator()
+
         # AI 教学联动：将当前白板内容作为上下文，向 AI 提问
         self._add_action(tb, "AI 答疑", self._ask_ai)
 
@@ -153,6 +162,7 @@ class MainWindow(QMainWindow):
             color_part = " | 颜色 " + self._active_color
         width_part = " | 线宽 %dpx" % self.board.pen_width
         grid_part = " | 网格 开" if self.board.is_grid_enabled() else " | 网格 关"
+        natural_part = " | 自然笔 开" if self.board.variable_width else " | 自然笔 关"
         # 实时缩放百分比：屏幕像素 ↔ 场景坐标的缩放系数 ×100（默认 100%）。
         # 只读视图变换矩阵，不改变任何笔迹/状态，完全无副作用。
         scale = self.board.transform().m11()
@@ -161,8 +171,8 @@ class MainWindow(QMainWindow):
         zoom_part = " | 缩放 %d%%" % int(round(scale * 100.0))
         undo = "可撤销" if scene.can_undo() else "不可撤销"
         redo = "可重做" if scene.can_redo() else "不可重做"
-        text = "工具：%s%s%s%s%s | 笔迹 %d 条 | %s | %s" % (
-            tool, color_part, width_part, grid_part, zoom_part,
+        text = "工具：%s%s%s%s%s%s | 笔迹 %d 条 | %s | %s" % (
+            tool, color_part, width_part, grid_part, natural_part, zoom_part,
             scene.count(), undo, redo,
         )
         self._status_label.setText(text)
@@ -254,6 +264,12 @@ class MainWindow(QMainWindow):
         """开启/关闭书写辅助网格，并同步工具栏勾选态与状态栏。"""
         self.board.set_grid_enabled(checked)
         self._grid_act.setChecked(self.board.is_grid_enabled())
+        self._update_status()
+
+    def _toggle_natural(self, checked):
+        """开启/关闭自然笔（速度感知变宽），并同步工具栏勾选态与状态栏。"""
+        self.board.set_variable_width(checked)
+        self._natural_act.setChecked(self.board.variable_width)
         self._update_status()
 
     def _clear(self):

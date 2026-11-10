@@ -23,6 +23,7 @@ python main.py
 ## 功能
 
 - **平滑书写**：采用「中点 + 二次贝塞尔」算法对手写采样点做平滑，笔迹自然圆滑。
+- **自然笔（速度感知变宽）**：工具栏「自然笔」开关（默认关闭）开启后，笔迹随书写速度变化粗细——慢笔粗、快笔细，模拟真实钢笔 / 毛笔手感，板书更有节奏与层次。实现上按采样点时间戳估算逐点书写速度，映射到半宽后用「中心线偏移成闭合轮廓 + 填充」渲染（现代变宽描边的标准做法）；提交时同步对「点—时间戳」做 RDP 抽稀，保证存储精简。该特性**默认关闭**，因此不改动任何既有默认书写行为，老白板文件（无半宽数据）载入后仍是原来的固定宽度笔迹，对橡皮擦、序列化与导出管线零侵入。
 - **缩放感知采样**：鼠标采样的“最小间距阈值”随画布缩放自适应，始终保持「屏幕约 1px」恒定。放大讲解细节时不再因采样点被丢弃而让笔迹变锯齿；缩小总览时也不会过度密集采样。缩放/平移只作用于视图变换，同样对场景数据与导出管线零侵入。
 - **笔迹自动抽稀**：提交笔迹时用 Ramer–Douglas–Peucker 算法按 1.5px 容差抽掉冗余近共线采样点，白板文件体积与载入/渲染开销显著下降（典型连笔可减少 6–7× 点数、约 85% 体积），视觉几乎无差别。
 - **调色板与线宽**：6 色调色板 + 1–40px 可调线宽。
@@ -68,6 +69,7 @@ python main.py
 ```bash
 QT_QPA_PLATFORM=offscreen python3 tests/test_smoke.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_ai_link.py
+QT_QPA_PLATFORM=offscreen python3 tests/test_natural_pen.py
 ```
 
 ## 项目结构
@@ -77,9 +79,10 @@ main.py                  启动入口
 smartboard/
   app.py                 应用入口（QApplication + MainWindow）
   main_window.py         主窗口与工具栏（状态联动 + AI 答疑入口）
-  view.py                白板视图（鼠标交互 + 实时预览 + 图片导出）
-  whiteboard.py          核心：Stroke 数据模型、WhiteboardScene、路径平滑
+  view.py                白板视图（鼠标交互 + 实时预览 + 图片导出 + 自然笔速度采样）
+  whiteboard.py          核心：Stroke 数据模型、WhiteboardScene、路径平滑、速度感知变宽
   ai_link.py             AI 教学联动（可插拔：本地答疑 / 真实可用的远程后端，标准库 urllib + 优雅降级）
 tests/test_smoke.py      headless 测试套件（79 项，含缩放/平移/状态栏/缩放百分比/适应内容/缩放感知书写/网格/载入原子性保护/清空可撤销）
 tests/test_ai_link.py    AI 联动单元测试（20 项：含板面感知统计 analyze_board、本地答疑增强、远程后端真实调用的 monkeypatch 与降级验证）
+tests/test_natural_pen.py 自然笔（速度感知变宽）单元测试（16 项：速度→半宽映射单调性/取值区间、变宽轮廓构造、序列化兼容、_attach 渲染分支、PNG 导出、工具栏开关与状态栏联动）
 ```
