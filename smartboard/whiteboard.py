@@ -31,6 +31,10 @@ def build_polyline(points):
 # 视觉上与原笔迹几乎无差别，但能显著减少存储点数与渲染/载入开销。
 SIMPLIFY_EPSILON = 1.5
 
+# 荧光笔（高亮笔）的渲染不透明度：半透明叠加，强调关键内容而不遮挡其下文字。
+# 取值 0~1，越小越透明。仅作用于荧光笔笔迹，对普通笔迹/橡皮擦/序列化零侵入。
+HL_ALPHA = 0.4
+
 
 def _perp_distance(point, a, b):
     """点 point 到线段 a→b 的垂直距离；a==b（零长线段）时退化为到点的距离。
@@ -252,18 +256,22 @@ def simplify_with_meta(points, meta, epsilon=SIMPLIFY_EPSILON):
 # ---------------------------------------------------------------------------
 
 class Stroke:
-    """一条笔迹：颜色、线宽、采样点序列、是否为橡皮擦。
+    """一条笔迹：颜色、线宽、采样点序列、是否为橡皮擦、是否为荧光笔。
 
     可选 half_widths：与 points 等长的逐点半宽列表（场景坐标，px），用于「自然笔」
     速度感知变宽。为 None 时退化为固定宽度（与旧行为一致），保证老文件向后兼容。
+    highlighter：荧光笔标志，开启时笔迹以 HL_ALPHA 半透明度渲染（叠加高亮），
+    其余语义与普通笔迹完全一致，对橡皮擦/序列化/导出零侵入。
     """
 
-    def __init__(self, color, width, points, eraser=False, half_widths=None):
-        # type: (QColor, int, list, bool, list) -> None
+    def __init__(self, color, width, points, eraser=False, half_widths=None,
+                 highlighter=False):
+        # type: (QColor, int, list, bool, list, bool) -> None
         self.color = QColor(color)
         self.width = int(width)
         self.points = [QPointF(p) for p in points]
         self.eraser = bool(eraser)
+        self.highlighter = bool(highlighter)
         # 仅当长度匹配 points 时才视为有效变宽笔迹，避免脏数据导致渲染异常
         if half_widths is not None and len(half_widths) == len(self.points):
             self._half_widths = [float(h) for h in half_widths]
@@ -295,6 +303,9 @@ class Stroke:
         # 变宽笔迹序列化逐点半宽（场景坐标，3 位小数）；固定宽度笔迹省略以兼容旧文件
         if self._half_widths is not None:
             d["half_widths"] = [round(h, 3) for h in self._half_widths]
+        # 荧光笔标志仅在开启时写入，默认（关闭）省略以兼容旧文件
+        if self.highlighter:
+            d["highlighter"] = True
         return d
 
     @classmethod
@@ -309,6 +320,7 @@ class Stroke:
             pts,
             d.get("eraser", False),
             half_widths=hw,
+            highlighter=d.get("highlighter", False),
         )
 
 
@@ -367,6 +379,10 @@ class WhiteboardScene(QGraphicsScene):
             pen_color = self._bg if stroke.eraser else stroke.color
             pen = QPen(pen_color, stroke.width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
             item.setPen(pen)
+        # 荧光笔：半透明叠加渲染（HL_ALPHA），强调关键内容而不遮挡其下文字。
+        # 与橡皮擦互斥（橡皮以背景色覆盖，必须不透明），故仅在「非橡皮」时生效。
+        if stroke.highlighter and not stroke.eraser:
+            item.setOpacity(HL_ALPHA)
         # 按「绘制顺序」分配单调递增 z：橡皮擦与普通笔迹一视同仁。
         # 这样橡皮只遮住它“之前”绘制的笔迹，而不会压住“之后”新画的笔迹，
         # 修复旧实现固定 eraser z=2 导致后画笔迹被橡皮区域遮挡的缺陷。

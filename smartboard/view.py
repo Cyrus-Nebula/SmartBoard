@@ -44,6 +44,10 @@ class WhiteboardView(QGraphicsView):
         self.pen_color = QColor("#1A1A1A")
         self.pen_width = 4
         self.eraser = False
+        # 荧光笔（高亮笔）：默认关闭；开启后以半透明叠加方式渲染，强调关键内容。
+        # 与橡皮擦互斥（同一时刻只能处于 画笔 / 橡皮擦 / 荧光笔 之一），对既有书写
+        # 与序列化零侵入——关闭时行为与原先完全一致。
+        self.highlighter = False
 
         # 提交笔迹时的抽稀容差（像素）；设为 0 可关闭抽稀。
         # 默认沿用手写采样 1px 量级，保证视觉一致的前提下减少存储与渲染开销。
@@ -146,6 +150,8 @@ class WhiteboardView(QGraphicsView):
     # -- 工具属性 --
     def set_pen_color(self, color):
         self.pen_color = QColor(color)
+        # 选色即退出橡皮擦（橡皮以背景色覆盖，与画笔颜色无关）；荧光笔保留——
+        # 因为荧光笔本身依赖颜色，选色只改高亮色、不退出荧光笔模式。
         self.eraser = False
         self._sync_cursor()
 
@@ -154,7 +160,22 @@ class WhiteboardView(QGraphicsView):
         self._sync_cursor()
 
     def set_eraser(self, on):
-        self.eraser = bool(on)
+        on = bool(on)
+        self.eraser = on
+        # 橡皮擦与荧光笔互斥：开启橡皮擦时强制退出荧光笔模式
+        if on:
+            self.highlighter = False
+        self._update_cursor_visibility()
+
+    def set_highlighter(self, on):
+        """开关「荧光笔」高亮：开启后以半透明叠加渲染，强调关键内容。
+
+        与橡皮擦互斥：开启荧光笔时强制退出橡皮擦模式。
+        """
+        on = bool(on)
+        self.highlighter = on
+        if on:
+            self.eraser = False
         self._update_cursor_visibility()
 
     def set_variable_width(self, on):
@@ -169,8 +190,12 @@ class WhiteboardView(QGraphicsView):
         return self.scene().is_grid_enabled()
 
     def _update_cursor_visibility(self):
-        """仅在「画笔模式 + 鼠标位于视口内」时显示预览环，橡皮模式隐藏。"""
-        if (not self.eraser) and self._mouse_inside:
+        """仅在「画笔模式（非橡皮、非荧光笔）+ 鼠标位于视口内」时显示预览环。
+
+        橡皮擦隐藏环（无需笔宽预判）；荧光笔亦隐藏——其半透明渲染与实心环的
+        视觉预期不一致，隐藏可避免误导落点/笔宽判断。
+        """
+        if (not self.eraser) and (not self.highlighter) and self._mouse_inside:
             self.pen_cursor.show()
         else:
             self.pen_cursor.hide()
@@ -218,7 +243,10 @@ class WhiteboardView(QGraphicsView):
         if event.button() == Qt.LeftButton:
             self._drawing = True
             pos = self.mapToScene(event.pos())
-            self._current = Stroke(self.pen_color, self.pen_width, [pos], self.eraser)
+            self._current = Stroke(
+                self.pen_color, self.pen_width, [pos],
+                self.eraser, highlighter=self.highlighter,
+            )
             # 记录落笔时间戳（毫秒），供「自然笔」估算书写速度→笔宽
             self._current._times = [event.timestamp()]
             self._start_preview()
@@ -340,6 +368,11 @@ class WhiteboardView(QGraphicsView):
         else:
             self._preview.setPen(self._preview_pen())
         self._preview.setZValue(1)
+        # 荧光笔预览同样半透明，与最终渲染一致（不透明预览会误导下笔效果）
+        hl = self._current.highlighter if self._current is not None else False
+        if hl and not self._current.eraser:
+            from .whiteboard import HL_ALPHA
+            self._preview.setOpacity(HL_ALPHA)
         self.scene().addItem(self._preview)
         self._update_preview()
 

@@ -9,6 +9,7 @@ from .whiteboard import (
     compute_half_widths,
     simplify_points,
     simplify_with_meta,
+    HL_ALPHA,
 )
 from .view import WhiteboardView
 from .main_window import MainWindow
@@ -27,4 +28,5 @@ __all__ = [
     "compute_half_widths",
     "simplify_points",
     "simplify_with_meta",
+    "HL_ALPHA",
 ]

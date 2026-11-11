@@ -95,6 +95,13 @@ class MainWindow(QMainWindow):
         self._eraser_act.setCheckable(True)
         self._eraser_act.setToolTip("橡皮擦：以背景色覆盖擦除；右键点击任意笔迹可整条删除")
 
+        # 荧光笔（高亮笔）：半透明叠加，强调关键结论/公式而不遮挡其下文字
+        self._hl_act = self._add_action(tb, "荧光笔", self._toggle_highlighter)
+        self._hl_act.setCheckable(True)
+        self._hl_act.setToolTip(
+            "荧光笔：半透明高亮笔，叠在板书上突出关键结论/公式，不遮挡其下文字"
+        )
+
         tb.addSeparator()
 
         # 撤销 / 重做 / 清空
@@ -148,7 +155,7 @@ class MainWindow(QMainWindow):
         self._update_status()
 
     def _update_status(self):
-        """根据当前画笔/橡皮擦状态与场景笔迹数，刷新状态栏文本。
+        """根据当前画笔/橡皮擦/荧光笔状态与场景笔迹数，刷新状态栏文本。
 
         纯展示逻辑：读取 self.board / self._active_color / 场景计数，不做任何写操作，
         因此可安全地挂在 strokesChanged 信号链路上随笔迹变化自动刷新。
@@ -157,6 +164,9 @@ class MainWindow(QMainWindow):
         if self.board.eraser:
             tool = "橡皮擦"
             color_part = ""                      # 橡皮擦模式下颜色无意义，省略
+        elif self.board.highlighter:
+            tool = "荧光笔"
+            color_part = " | 颜色 " + self._active_color
         else:
             tool = "画笔"
             color_part = " | 颜色 " + self._active_color
@@ -217,6 +227,7 @@ class MainWindow(QMainWindow):
         add("Ctrl+0", self.board.reset_view)                     # 复位视图
         add("Ctrl+F", self.board.fit_to_content)                 # 适应内容（一键总览整块板书）
         add("G", lambda: self._toggle_grid(not self.board.is_grid_enabled()))  # 网格开关
+        add("H", lambda: self._toggle_highlighter(not self.board.highlighter))  # 荧光笔开关
 
     # -- 状态联动 --
     def _refresh_color_buttons(self):
@@ -246,7 +257,10 @@ class MainWindow(QMainWindow):
     def _pick_color(self, hex_color):
         self.board.set_pen_color(hex_color)
         self._active_color = hex_color
+        # 选色退出橡皮擦（橡皮与画笔颜色无关）；荧光笔保留——颜色即高亮色。
+        # 据此同步两个工具栏勾选态。
         self._eraser_act.setChecked(False)
+        self._hl_act.setChecked(self.board.highlighter)
         self._refresh_color_buttons()
         self._update_status()
 
@@ -256,7 +270,19 @@ class MainWindow(QMainWindow):
 
     def _toggle_eraser(self, checked):
         self.board.set_eraser(checked)
+        # 让工具栏勾选态与实际状态自洽（无论经按钮点击还是程序调用都一致）
+        self._eraser_act.setChecked(self.board.eraser)
+        # 橡皮擦与荧光笔互斥：开启橡皮擦时取消荧光笔勾选
+        self._hl_act.setChecked(self.board.highlighter)
         # 橡皮擦激活时取消颜色高亮，关闭时恢复
+        self._refresh_color_buttons()
+        self._update_status()
+
+    def _toggle_highlighter(self, checked):
+        """开启/关闭荧光笔（高亮笔），并同步工具栏勾选态与状态栏。"""
+        self.board.set_highlighter(checked)
+        self._hl_act.setChecked(self.board.highlighter)
+        self._eraser_act.setChecked(self.board.eraser)
         self._refresh_color_buttons()
         self._update_status()
 
