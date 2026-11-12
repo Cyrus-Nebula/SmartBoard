@@ -207,6 +207,54 @@ class TestAnalyzeBoard(unittest.TestCase):
         self.assertEqual(s["normal"], 1)
 
 
+class TestAnalyzeBoardMetrics(unittest.TestCase):
+    """验证新增的量化指标：书写量(ink_length) / 版面包围盒(bbox) / 荧光笔数(highlighted)。
+
+    这些都是确定性、纯标准库、无 GUI 依赖的计算，便于单元覆盖。
+    """
+
+    def test_ink_length_and_bbox(self):
+        # 一条 L 形折线：(0,0)->(3,0)->(3,4)，折线总长 3+4=7，包围盒 3×4
+        board = {"strokes": [{
+            "color": "#1A1A1A", "width": 4,
+            "points": [[0, 0], [3, 0], [3, 4]],
+        }]}
+        s = analyze_board(board)
+        self.assertAlmostEqual(s["ink_length"], 7.0, places=4)
+        self.assertEqual(s["bbox"], {"x": 0.0, "y": 0.0, "w": 3.0, "h": 4.0})
+        self.assertEqual(s["normal"], 1)
+        self.assertEqual(s["highlighted"], 0)
+        self.assertEqual(s["eraser"], 0)
+
+    def test_eraser_excluded_from_ink_and_bbox(self):
+        # 橡皮擦笔迹不计入板书量与版面（仅普通笔迹计入）
+        board = {"strokes": [
+            {"color": "#000", "width": 4, "points": [[0, 0], [10, 0]]},
+            {"color": "#FFF", "width": 4, "eraser": True,
+             "points": [[0, 50], [10, 50]]},
+        ]}
+        s = analyze_board(board)
+        self.assertAlmostEqual(s["ink_length"], 10.0, places=4)
+        self.assertEqual(s["bbox"], {"x": 0.0, "y": 0.0, "w": 10.0, "h": 0.0})
+        self.assertEqual(s["eraser"], 1)
+        self.assertEqual(s["normal"], 1)
+
+    def test_highlighted_counted(self):
+        board = {"strokes": [
+            {"color": "#000", "width": 4, "points": [[0, 0], [10, 0]]},
+            {"color": "#FB8C00", "width": 8, "highlighter": True,
+             "points": [[0, 5], [10, 5]]},
+        ]}
+        s = analyze_board(board)
+        self.assertEqual(s["highlighted"], 1)
+        self.assertEqual(s["normal"], 2)
+
+    def test_empty_board_no_bbox(self):
+        s = analyze_board({"strokes": []})
+        self.assertIsNone(s["bbox"])
+        self.assertEqual(s["ink_length"], 0.0)
+
+
 class TestEnrichedLocal(unittest.TestCase):
     """验证本地答疑升级为「板面感知」：依据真实统计给出有针对性的提示。"""
 
@@ -259,6 +307,57 @@ class TestRemoteStats(unittest.TestCase):
         self.assertIn("stats", captured["payload"])
         self.assertEqual(captured["payload"]["stats"]["total"], 1)
         self.assertEqual(captured["payload"]["stats"]["normal"], 1)
+
+
+class TestBoardSuggestions(unittest.TestCase):
+    """验证本地答疑新增的「板面感知教学建议」：基于量化指标给出可执行下一步动作。"""
+
+    def _ask(self, board):
+        ai = AITeacher()
+        return ai.ask("这道题怎么讲？", board_dict_to_text(board), board=board)
+
+    def test_sparse_board_suggests_more_content(self):
+        # 仅一两条极短笔迹（板书量远低于阈值）→ 建议补充内容
+        board = {"strokes": [{"color": "#000", "width": 4,
+                              "points": [[0, 0], [10, 0]]}]}
+        ans = self._ask(board)
+        self.assertIn("板面内容偏少", ans)
+        self.assertIn("这道题怎么讲？", ans)
+
+    def test_rich_board_without_highlight_suggests_highlighter(self):
+        # 已有 3+ 条内容但未用荧光笔 → 建议用荧光笔突出重点
+        board = {"strokes": [
+            {"color": "#1A1A1A", "width": 4,
+             "points": [[i, 0] for i in range(8)]},
+            {"color": "#E53935", "width": 4,
+             "points": [[0, i] for i in range(8)]},
+            {"color": "#1E88E5", "width": 4,
+             "points": [[i, i] for i in range(8)]},
+        ]}
+        ans = self._ask(board)
+        self.assertIn("尚未使用荧光笔", ans)
+
+    def test_board_with_highlight_suggests_focus(self):
+        # 已用荧光笔 → 引导聚焦高亮区域
+        board = {"strokes": [
+            {"color": "#1A1A1A", "width": 4,
+             "points": [[i, 0] for i in range(8)]},
+            {"color": "#FB8C00", "width": 8, "highlighter": True,
+             "points": [[0, i] for i in range(8)]},
+        ]}
+        ans = self._ask(board)
+        self.assertIn("已用荧光笔突出重点", ans)
+
+    def test_eraser_suggests_common_mistake(self):
+        # 含橡皮修正 → 提示顺势讲解易错点（建议与基础答复里的计数互补）
+        board = {"strokes": [
+            {"color": "#1A1A1A", "width": 4, "points": [[0, 0], [10, 0]]},
+            {"color": "#FFF", "width": 4, "eraser": True,
+             "points": [[0, 5], [10, 5]]},
+        ]}
+        ans = self._ask(board)
+        self.assertIn("橡皮修正", ans)
+        self.assertIn("易错点", ans)
 
 
 if __name__ == "__main__":
