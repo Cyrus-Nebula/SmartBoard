@@ -339,15 +339,95 @@ class WhiteboardView(QGraphicsView):
     def _erase_stroke_at(self, screen_pos):
         self._erase_stroke_at_scene(self.mapToScene(screen_pos))
 
+    # 右键精确擦除的"宽容"命中半径（屏幕像素）。课堂投影 / 低分辨率场景下
+    # 教师鼠标常有 ±几像素偏差，固定屏幕像素半径（而非场景像素）保证任意缩放下
+    # 容差手感一致，避免放大时误以为"擦不掉"反复点击。
+    ERASER_HIT_TOLERANCE_PX = 6.0
+
     def _erase_stroke_at_scene(self, scene_pos):
-        """删除场景坐标命中的整条笔迹；命中空白处则无操作。"""
-        item = self.scene().itemAt(scene_pos, self.transform())
-        if item is None or item is self._preview:
-            return False
-        stroke = self.scene()._stroke_of.get(item)
+        """删除场景坐标命中的整条笔迹；命中空白（且邻域无笔迹）则无操作。
+
+        命中策略（宽容化改进）：
+        1) 先尝试精确命中 itemAt（点位于笔迹形状内即命中，自带半个笔宽容差）；
+        2) 未精确命中时，在「固定屏幕像素」半径（约 6px，换算到场景坐标）的
+           邻域内寻找最近的笔迹并整条删除，使右键擦除对轻微偏差更宽容，
+           改善课堂投影下的擦除体验。该容差仅作用于命中判定，不改动任何
+           笔迹数据、渲染或序列化，对既有书写管线零侵入。
+        """
+        stroke = self._stroke_at(scene_pos)
         if stroke is None:
             return False
         return self.scene().remove_stroke(stroke)
+
+    def _stroke_at(self, scene_pos):
+        """返回 scene_pos 命中的笔迹；精确命中优先，否则在屏幕像素容差邻域内找最近笔迹。
+
+        返回 WhiteboardScene._strokes 中的 Stroke 或 None。
+        """
+        # 1) 精确命中：itemAt 的命中形状已含半个笔宽，是最直接的命中。
+        item = self.scene().itemAt(scene_pos, self.transform())
+        if item is not None and item is not self._preview:
+            s = self.scene()._stroke_of.get(item)
+            if s is not None:
+                return s
+
+        # 2) 宽容命中：把固定屏幕像素容差换算成场景距离（缩放下手感一致），
+        #    用场景空间索引 items(region) 快速拿到邻域候选，再取最近笔迹。
+        scale = self.transform().m11()
+        if not scale or scale <= 0.0:
+            scale = 1.0
+        radius = self.ERASER_HIT_TOLERANCE_PX / scale
+        region = QRectF(
+            scene_pos.x() - radius, scene_pos.y() - radius,
+            2.0 * radius, 2.0 * radius,
+        )
+        stroke_of = self.scene()._stroke_of
+        candidates = [
+            it for it in self.scene().items(region)
+            if it is not self._preview and it in stroke_of
+        ]
+        if not candidates:
+            return None
+
+        best, best_d = None, None
+        for it in candidates:
+            d = self._distance_to_item(it, scene_pos)
+            if d is None:
+                continue
+            if best_d is None or d < best_d:
+                best, best_d = stroke_of[it], d
+        # 仅当最近笔迹确实落在容差半径内才删除，避免"远处的笔迹被误删"
+        if best is not None and best_d <= radius:
+            return best
+        return None
+
+    @staticmethod
+    def _distance_to_item(item, scene_pos):
+        """计算 scene_pos 到某笔迹图元的最近距离（场景坐标，px）；点在笔迹形状内返回 0。
+
+        用 item.shape()（QGraphicsPathItem 已按画笔/填充算好轮廓）而非原始 path()，
+        因此：
+        - 对固定宽度细笔迹：shape 是「带笔宽的描边轮廓」，点到其外缘即最近距离；
+        - 对变宽（自然笔）/荧光笔（填充轮廓）笔迹：点在墨迹内 contains() 即命中 0，
+          不会因"点到封闭轮廓边界很远"而漏擦粗笔迹。
+        QGraphicsPathItem 仅设置 ZValue（无平移/旋转），shape() 坐标即场景坐标，可直接比较。
+        采样失败 / 形状为空时返回 None（该候选跳过）。
+        """
+        shape = item.shape()
+        if shape.contains(scene_pos):
+            return 0.0
+        length = shape.length()
+        if length <= 0.0:
+            return None
+        # 沿轮廓按弧长均匀采样（约每场景单位一点，最多 2000 点），取最近距离
+        steps = min(max(2, int(length)), 2000)
+        best = None
+        for i in range(steps + 1):
+            p = shape.pointAtPercent(i / steps)
+            dd = (p.x() - scene_pos.x()) ** 2 + (p.y() - scene_pos.y()) ** 2
+            if best is None or dd < best:
+                best = dd
+        return best ** 0.5
 
     # -- 预览管理 --
     def _preview_pen(self):

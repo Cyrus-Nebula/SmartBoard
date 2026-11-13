@@ -534,6 +534,106 @@ class ObjectEraserTest(unittest.TestCase):
         self.assertEqual(view.scene().count(), before)
 
 
+class ForgivingEraseTest(unittest.TestCase):
+    """验证「宽容右键精确擦除」：精确命中仍生效，轻微偏差（屏幕约 6px 内）也能擦掉，
+    远处误点不误删。headless 可验证，且不改动笔迹数据 / 序列化 / 渲染。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _view_with_stroke(self):
+        self._app()
+        view = WhiteboardView()
+        view.resize(600, 400)
+        view.show()
+        view.centerOn(QPointF(0, 0))
+        # 极细（width=1）水平笔迹，避免 itemAt 自带半个笔宽容差干扰对"宽容半径"的验证
+        view.scene().add_stroke(
+            Stroke(QColor("black"), 1, [QPointF(0, 0), QPointF(100, 0)])
+        )
+        return view
+
+    def test_exact_hit_still_works(self):
+        """回归：精确落在笔迹上仍整条删除。"""
+        view = self._view_with_stroke()
+        self.assertEqual(view.scene().count(), 1)
+        self.assertTrue(view._erase_stroke_at_scene(QPointF(50, 0)))
+        self.assertEqual(view.scene().count(), 0)
+
+    def test_near_miss_within_tolerance_erases(self):
+        """轻微偏差仍在容差内（沿垂直于笔迹方向偏移 4px < 6px 容差）-> 整条删除。"""
+        view = self._view_with_stroke()
+        self.assertEqual(view.scene().count(), 1)
+        # (50,4) 到水平线 y=0 的距离为 4 场景单位；scale=1 时容差半径=6 -> 应命中
+        self.assertTrue(view._erase_stroke_at_scene(QPointF(50, 4)))
+        self.assertEqual(view.scene().count(), 0)
+
+    def test_far_click_does_not_erase(self):
+        """明显超出容差（偏移 20px > 6px 容差）-> 不擦除、返回 False。"""
+        view = self._view_with_stroke()
+        self.assertEqual(view.scene().count(), 1)
+        # (50,20) 到线距离 20 > 6 容差，且邻域候选无其它笔迹 -> 不删除
+        self.assertFalse(view._erase_stroke_at_scene(QPointF(50, 20)))
+        self.assertEqual(view.scene().count(), 1)
+
+    def test_tolerance_scales_with_zoom(self):
+        """放大后容差按屏幕像素保持（约 6px 屏幕），不因缩放变小而失效。"""
+        view = self._view_with_stroke()
+        # 放大 2×：场景单位容差半径减半（=3 场景单位），但仍对应 6 屏幕像素。
+        # 在屏幕 4px（=2 场景单位）处偏移仍应命中；屏幕 14px（=7 场景单位）处不应命中。
+        view.zoomBy(2.0)
+        view.centerOn(QPointF(50, 0))
+        self.assertEqual(view.scene().count(), 1)
+        # 屏幕约 4px 偏移 -> 命中（<= 6px 容差）
+        self.assertTrue(view._erase_stroke_at_scene(QPointF(50, 2)))
+        self.assertEqual(view.scene().count(), 0)
+
+        # 重新画一条再测"远处不擦"
+        view.scene().add_stroke(
+            Stroke(QColor("black"), 1, [QPointF(0, 0), QPointF(100, 0)])
+        )
+        view.centerOn(QPointF(50, 0))
+        # 屏幕约 14px 偏移（=7 场景单位）-> 超出容差，不擦除
+        self.assertFalse(view._erase_stroke_at_scene(QPointF(50, 7)))
+        self.assertEqual(view.scene().count(), 1)
+
+    def test_thick_stroke_inside_hit(self):
+        """粗笔迹：点击落在墨迹内部（偏移 < 半个笔宽）即命中整条删除。"""
+        self._app()
+        view = WhiteboardView()
+        view.resize(600, 400)
+        view.show()
+        view.centerOn(QPointF(0, 0))
+        # 粗笔迹 width=20：半宽 10，点击偏移 4（在墨迹内）应命中
+        view.scene().add_stroke(
+            Stroke(QColor("black"), 20, [QPointF(0, 0), QPointF(100, 0)])
+        )
+        self.assertEqual(view.scene().count(), 1)
+        self.assertTrue(view._erase_stroke_at_scene(QPointF(50, 4)))
+        self.assertEqual(view.scene().count(), 0)
+
+    def test_variable_width_stroke_inside_hit(self):
+        """变宽（自然笔）笔迹：点击落在墨迹内（contains）即命中，不因封闭轮廓误判漏擦。"""
+        self._app()
+        view = WhiteboardView()
+        view.resize(600, 400)
+        view.show()
+        view.centerOn(QPointF(0, 0))
+        # 构造一条变宽笔迹：中心线沿 x 轴、半宽恒为 6，等效于一条宽 12 的墨迹带
+        pts = [QPointF(x, 0.0) for x in range(0, 101)]
+        half = [6.0] * len(pts)
+        s = Stroke(QColor("black"), 4, pts)
+        s._half_widths = half
+        view.scene().add_stroke(s)
+        self.assertEqual(view.scene().count(), 1)
+        # 点击 (50, 3)：在墨迹带（±6）内部 -> contains 命中
+        self.assertTrue(view._erase_stroke_at_scene(QPointF(50, 3)))
+        self.assertEqual(view.scene().count(), 0)
+
+
 class SimplificationTest(unittest.TestCase):
     """验证提交笔迹时的 RDP 抽稀：减小存储/渲染开销，且视觉偏差受控。
 
