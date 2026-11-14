@@ -953,19 +953,24 @@ class PenCursorTest(unittest.TestCase):
         self.assertEqual(view.pen_cursor.pen_color().name().upper(), "#E53935")
 
     def test_visibility_pen_vs_eraser(self):
-        """画笔模式（鼠标在内）显示、橡皮模式隐藏。"""
+        """画笔模式（鼠标在内）显示实心环；橡皮模式显示红色虚线环（而非隐藏）。"""
         self._app()
         view = WhiteboardView()
         view.show()  # 使窗口层级可见，isVisible() 才能反映叠加层自身显隐状态
         view._mouse_inside = True
-        view._update_cursor_visibility()      # 画笔 + 鼠标在内 -> 显示
+        view._update_cursor_visibility()      # 画笔 + 鼠标在内 -> 显示实心环
         self.assertTrue(view.pen_cursor.isVisible())
+        self.assertFalse(view.pen_cursor.is_eraser_style())
 
-        view.set_eraser(True)                 # 切橡皮 -> 隐藏
-        self.assertFalse(view.pen_cursor.isVisible())
-
-        view.set_eraser(False)                # 切回画笔 -> 显示
+        view.set_eraser(True)                 # 切橡皮 -> 仍显示，但为红色虚线抹除环
         self.assertTrue(view.pen_cursor.isVisible())
+        self.assertTrue(view.pen_cursor.is_eraser_style())
+        self.assertEqual(view.pen_cursor.pen_color().name().upper(),
+                         "#E53935")
+
+        view.set_eraser(False)                # 切回画笔 -> 显示实心环
+        self.assertTrue(view.pen_cursor.isVisible())
+        self.assertFalse(view.pen_cursor.is_eraser_style())
 
     def test_move_to_centers_ring(self):
         """move_to 应把圆环中心对齐到给定视口坐标。"""
@@ -977,6 +982,88 @@ class PenCursorTest(unittest.TestCase):
         self.assertEqual(view.pen_cursor.x(), 95)
         self.assertEqual(view.pen_cursor.y(), 75)
         self.assertEqual(view.pen_cursor.width(), 10)
+
+
+class EraserCursorTest(unittest.TestCase):
+    """验证橡皮擦光标环：橡皮模式下显示红色虚线环，直径=橡皮宽度×缩放，随缩放同步。
+
+    改进背景：旧实现在橡皮擦模式下完全隐藏预览环，教师实时书写时无法预判
+    「橡皮会擦掉多大范围」，课堂纠错体验不佳。新实现在橡皮模式下显示与橡皮
+    等宽的红色虚线环，直观提示擦除范围；该环挂在视口（非场景图元），因此
+    对笔迹数据、序列化与导出图片零侵入。荧光笔模式仍隐藏环（避免误导）。
+    """
+
+    @staticmethod
+    def _app():
+        from PySide6.QtWidgets import QApplication
+        return QApplication.instance() or QApplication([])
+
+    def _view(self):
+        self._app()
+        v = WhiteboardView()
+        v.resize(600, 400)
+        v.show()
+        v.centerOn(QPointF(0, 0))
+        return v
+
+    def test_eraser_ring_visible_with_mouse_inside(self):
+        """橡皮模式 + 鼠标在内：环可见且为橡皮样式。"""
+        v = self._view()
+        v._mouse_inside = True
+        v.set_eraser(True)
+        self.assertTrue(v.pen_cursor.isVisible())
+        self.assertTrue(v.pen_cursor.is_eraser_style())
+
+    def test_eraser_ring_hidden_when_mouse_outside(self):
+        """橡皮模式但鼠标不在视口内：环隐藏（避免游离的提示环）。"""
+        v = self._view()
+        v._mouse_inside = False
+        v.set_eraser(True)
+        self.assertFalse(v.pen_cursor.isVisible())
+
+    def test_eraser_ring_diameter_matches_eraser_width(self):
+        """橡皮环直径应等于当前画笔（橡皮）线宽（scale=1 时）。"""
+        v = self._view()
+        v.set_pen_width(16)
+        v.set_eraser(True)
+        v._mouse_inside = True
+        v._sync_cursor()
+        v._update_cursor_visibility()
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 16.0, delta=1e-9)
+
+    def test_eraser_ring_scales_with_zoom(self):
+        """放大 2× 后橡皮环直径翻倍（= 橡皮宽度 × 缩放），始终反映真实擦除范围。"""
+        v = self._view()
+        v.set_pen_width(10)
+        v.set_eraser(True)
+        v._mouse_inside = True
+        v._sync_cursor()
+        v._update_cursor_visibility()
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 10.0, delta=1e-9)
+        v.zoomBy(2.0)
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 20.0, delta=1e-9)
+
+    def test_eraser_ring_color_is_indicator_red(self):
+        """橡皮环颜色应为醒目的指示红，与画笔环明显区分。"""
+        v = self._view()
+        v.set_eraser(True)
+        v._mouse_inside = True
+        v._sync_cursor()
+        self.assertEqual(v.pen_cursor.pen_color().name().upper(), "#E53935")
+
+    def test_switching_back_to_pen_restores_solid_ring(self):
+        """从橡皮切回画笔：环恢复为实心画笔样式，直径仍随线宽。"""
+        v = self._view()
+        v.set_pen_width(8)
+        v.set_eraser(True)
+        v._mouse_inside = True
+        v._sync_cursor()
+        v._update_cursor_visibility()
+        self.assertTrue(v.pen_cursor.is_eraser_style())
+
+        v.set_eraser(False)
+        self.assertFalse(v.pen_cursor.is_eraser_style())
+        self.assertAlmostEqual(v.pen_cursor.diameter(), 8.0, delta=1e-9)
 
 
 class ZoomPanTest(unittest.TestCase):

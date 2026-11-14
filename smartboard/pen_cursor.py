@@ -12,7 +12,10 @@
   scene().render 卷入「导出图片」，天然排除，零侵入导出逻辑；
 - 叠加层设置 WA_TransparentForMouseEvents，绝不会拦截鼠标事件，
   既有的鼠标书写 / 预览 / 右键擦除管线完全不受影响；
-- 仅在画笔模式下显示，橡皮擦模式隐藏（橡皮以背景覆盖方式工作，无需笔宽预判环）。
+- 画笔模式：显示与画笔等宽、同色的实心环，预判落点与笔宽；
+- 橡皮擦模式：显示与橡皮等宽的「红色虚线」环（set_eraser_style(True)），
+  让教师直观看到橡皮擦除范围（橡皮以背景覆盖方式工作，本身无视觉反馈）；
+- 荧光笔模式：隐藏环（其半透明叠加渲染与实心环的视觉预期不一致，避免误导）。
 """
 
 from PySide6.QtCore import Qt, QPoint, QRect
@@ -20,8 +23,12 @@ from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
 
+# 橡皮擦光标环采用醒目的红色虚线，与画笔实心环明显区分，避免与画笔环混淆。
+ERASER_RING_COLOR = "#E53935"
+
+
 class PenCursorOverlay(QWidget):
-    """跟随鼠标、显示当前画笔粗细与颜色的透明圆环（画笔尺寸预览）。"""
+    """跟随鼠标、显示当前画笔/橡皮粗细与颜色的透明圆环（尺寸预览）。"""
 
     def __init__(self, parent=None):
         super(PenCursorOverlay, self).__init__(parent)
@@ -30,6 +37,7 @@ class PenCursorOverlay(QWidget):
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
         self._diameter = 4.0
         self._color = QColor("#1A1A1A")
+        self._eraser = False   # 是否为橡皮擦模式（决定环的样式：虚线红环）
         self.hide()
 
     # -- 对外状态设置 --
@@ -41,6 +49,16 @@ class PenCursorOverlay(QWidget):
             self.resize(int(d), int(d))
         self._color = QColor(color)
         self.update()
+
+    def set_eraser_style(self, on):
+        """切换橡皮擦样式：开启时环以红色虚线绘制（突出「擦除范围」）。"""
+        on = bool(on)
+        if on != self._eraser:
+            self._eraser = on
+            self.update()
+
+    def is_eraser_style(self):
+        return self._eraser
 
     def set_pen_color(self, color):
         """仅更新圆环颜色（线宽不变时避免无谓 resize）。"""
@@ -64,7 +82,11 @@ class PenCursorOverlay(QWidget):
         rect = self.rect()
         # 描边线宽以「屏幕像素」计（cosmetic），不随任何缩放变化，
         # 保证不同笔宽下环的边框粗细一致、清晰可辨。
-        pen = QPen(self._color, 1.5, Qt.SolidLine)
+        # 橡皮擦模式用醒目红色虚线，与画笔实心环区分，直观提示擦除范围。
+        if self._eraser:
+            pen = QPen(QColor(ERASER_RING_COLOR), 1.5, Qt.DashLine)
+        else:
+            pen = QPen(self._color, 1.5, Qt.SolidLine)
         pen.setCosmetic(True)
         painter.setPen(pen)
         # 留 1px 边距，避免圆环被 widget 边界裁切

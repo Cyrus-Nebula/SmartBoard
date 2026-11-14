@@ -18,7 +18,7 @@ from .whiteboard import (
     build_variable_width_path,
     SIMPLIFY_EPSILON,
 )
-from .pen_cursor import PenCursorOverlay
+from .pen_cursor import PenCursorOverlay, ERASER_RING_COLOR
 
 
 class WhiteboardView(QGraphicsView):
@@ -165,6 +165,8 @@ class WhiteboardView(QGraphicsView):
         # 橡皮擦与荧光笔互斥：开启橡皮擦时强制退出荧光笔模式
         if on:
             self.highlighter = False
+        # 同步预览环：切换样式（橡皮红虚线 / 画笔实心）、直径与显隐
+        self._sync_cursor()
         self._update_cursor_visibility()
 
     def set_highlighter(self, on):
@@ -190,29 +192,37 @@ class WhiteboardView(QGraphicsView):
         return self.scene().is_grid_enabled()
 
     def _update_cursor_visibility(self):
-        """仅在「画笔模式（非橡皮、非荧光笔）+ 鼠标位于视口内」时显示预览环。
+        """在「画笔 / 橡皮擦模式（非荧光笔）+ 鼠标位于视口内」时显示预览环。
 
-        橡皮擦隐藏环（无需笔宽预判）；荧光笔亦隐藏——其半透明渲染与实心环的
-        视觉预期不一致，隐藏可避免误导落点/笔宽判断。
+        - 画笔模式：实心环，预判落点与笔宽；
+        - 橡皮擦模式：红色虚线环，直观提示「擦除范围」（橡皮本身以背景覆盖方式工作，
+          实时书写时无任何视觉反馈，环弥补这一盲区）；
+        - 荧光笔隐藏——其半透明叠加渲染与实心环的视觉预期不一致，隐藏避免误导。
         """
-        if (not self.eraser) and (not self.highlighter) and self._mouse_inside:
+        if (not self.highlighter) and self._mouse_inside:
             self.pen_cursor.show()
         else:
             self.pen_cursor.hide()
 
     def _sync_cursor(self):
-        """让预览环直径匹配画笔在「屏幕」上的实际宽度（= 线宽 × 当前缩放）。
+        """让预览环直径匹配画笔/橡皮在「屏幕」上的实际宽度（= 线宽 × 当前缩放）。
 
         预览环挂在视口（屏幕像素空间），而笔迹线宽是场景坐标；
         屏幕上一条 width 宽的笔迹实际渲染为 width×scale 像素。
         因此必须随视图缩放同步环直径，才能真实反映下笔粗细
         （避免放大后“环比实际笔迹细”、缩小时比实际粗，破坏落点/笔宽预判）。
-        仅在画笔模式有效；橡皮模式环被隐藏，尺寸误差无视觉影响。
+        橡皮擦模式下改用「红色虚线」样式并匹配橡皮宽度，提示擦除范围。
         """
         scale = self.transform().m11()
         if scale <= 0.0:
             scale = 1.0
-        self.pen_cursor.set_pen(self.pen_width * scale, self.pen_color)
+        if self.eraser:
+            # 橡皮擦：环直径 = 橡皮宽度 × 缩放；红色虚线样式突出擦除范围
+            self.pen_cursor.set_pen(self.pen_width * scale, ERASER_RING_COLOR)
+            self.pen_cursor.set_eraser_style(True)
+        else:
+            self.pen_cursor.set_pen(self.pen_width * scale, self.pen_color)
+            self.pen_cursor.set_eraser_style(False)
 
     def _scene_sample_threshold(self):
         """鼠标采样的场景坐标间距阈值，保持「屏幕约 1px」恒定。
