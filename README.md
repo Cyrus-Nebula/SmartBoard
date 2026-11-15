@@ -43,6 +43,7 @@ python main.py
   - **板面感知答疑（新增）**：本地答疑不再只是笼统提示，而是基于白板结构化统计（`analyze_board`）给出有针对性的教学建议——如实汇报「共 N 条内容（笔迹 M 条，含 K 处橡皮修正）、主要配色」，并据此提示「按步骤讲解 / 用不同颜色高亮关键结论」等；空白白板会额外提示先书写再提问。统计纯标准库实现、无 GUI 依赖，兼容 Python 3.7，便于单元覆盖。
   - **远程请求携带 stats 上下文（新增）**：调用远程后端时，请求体在原有 `question` / `context` 之外附带 `stats`（笔迹数、橡皮次数、配色分布等结构化摘要），让真实大模型更快把握板面规模与配色，无需逐行解析采样点文本；`context` 文本仍保留以兼容既有后端。
   - **板面感知「教学建议」（新增）**：`analyze_board` 在原有统计外新增量化指标——`ink_length`（板书采样点折线总长，量化「写了多少」）、`bbox`（非橡皮笔迹的版面包围盒，反映布局）、`highlighted`（荧光笔使用条数）；本地答疑据此给出**可执行的下一步动作**而非泛泛而谈：板书量偏少时提示补充步骤/图示、已有内容却未用荧光笔时建议高亮突出重点、已用高亮时引导聚焦、含橡皮修正时顺势讲解易错点、多色分层时给予肯定。统计纯标准库实现、无 GUI 依赖，兼容 Python 3.7，便于单元覆盖。
+- **可见内容感知的「适应内容 / 导出图片」**：`适应内容`（`Ctrl+F`）与`导出图片`现在只根据**真实板书**计算内容边界，**橡皮擦笔迹不再撑大画面**。橡皮擦以背景色覆盖、本身不产生可见墨迹，旧实现把它计入 `itemsBoundingRect()` 后，教师在空白处随手一擦就会让板书被缩到角落、导出的 PNG 凭空多出大片留白。修复后边界口径与旧实现完全一致（同一套 Qt 场景包围盒），仅多一层「排除橡皮擦」过滤：无橡皮擦时结果逐像素相同，对既有书写/序列化零侵入；整板只剩橡皮擦（等同空白板）时自动回退默认画布 / 复位视图。
 - **书写辅助网格**：工具栏「网格」按钮（或快捷键 `G`）可叠加一层极淡的参考线，帮助教师保持书写水平、对齐图形与公式，尤其适合投影授课。网格画在场景背景层，因此视图与 PNG 导出均「所见即所得」地包含它；**默认关闭**，对既有书写、橡皮擦、序列化与导出管线零侵入。
 - **键盘快捷键**：为常用操作提供快捷键，书写过程中无需切换鼠标即可撤销/重做/清空/切换橡皮擦（见下方列表）。
 
@@ -75,6 +76,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_smoke.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_ai_link.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_natural_pen.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_highlighter.py
+QT_QPA_PLATFORM=offscreen python3 tests/test_content_bounds.py
 ```
 
 ## 项目结构
@@ -91,4 +93,6 @@ tests/test_smoke.py      headless 测试套件（79 项，含缩放/平移/状�
 tests/test_ai_link.py    AI 联动单元测试（28 项：含板面感知统计 analyze_board 的量化指标 ink_length/bbox/highlighted、本地答疑增强与板面感知教学建议、远程后端真实调用的 monkeypatch 与降级验证）
 tests/test_natural_pen.py 自然笔（速度感知变宽）单元测试（16 项：速度→半宽映射单调性/取值区间、变宽轮廓构造、序列化兼容、_attach 渲染分支、PNG 导出、工具栏开关与状态栏联动）
 tests/test_highlighter.py 荧光笔（高亮笔）单元测试（17 项：序列化往返/老文件兼容、_attach 半透明渲染与颜色保留、自然笔+荧光笔组合、视图工具互斥/预览透明度/光标环隐藏、主窗口工具栏/状态栏/快捷键 H 联动、端到端提交）
+  smartboard/whiteboard.py 新增 WhiteboardScene.content_bounding_rect()（只聚合非橡皮笔迹边界）
+tests/test_content_bounds.py 可见内容边界单元测试（11 项：橡皮擦不撑大边界、全橡皮擦回退、无橡皮擦与旧口径一致、导出尺寸、适应内容复位）
 ```

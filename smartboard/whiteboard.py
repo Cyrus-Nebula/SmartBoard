@@ -7,7 +7,7 @@
 import json
 import math
 
-from PySide6.QtCore import Qt, QPointF, Signal
+from PySide6.QtCore import Qt, QPointF, QRectF, Signal
 from PySide6.QtGui import QColor, QPen, QBrush, QPainter, QPainterPath
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsPathItem
 
@@ -357,6 +357,26 @@ class WhiteboardScene(QGraphicsScene):
     # -- 公开访问器（便于测试与外部读取）--
     def count(self):
         return len(self._strokes)
+
+    def content_bounding_rect(self):
+        """返回「可见板书」的场景包围盒：聚合所有非橡皮笔迹图元的边界。
+
+        橡皮擦以背景色覆盖方式擦除，本身不产生任何可见墨迹；把它计入内容边界
+        会让「适应内容 / 导出图片」把教师随手在空白处擦出的区域也框进来，
+        导致板书被挤到画面角落、导出图片凭空多出大片留白。这里只统计真实板书。
+
+        实现细节：
+        - 复用每条笔迹已挂载图元的 sceneBoundingRect()，与 itemsBoundingRect()
+          使用同一套 Qt 边界计算，故不含橡皮擦时结果与旧实现完全一致（零侵入）；
+        - 图元若无有效父项/变换，sceneBoundingRect() == 场景坐标边界，安全；
+        - 无可见笔迹时返回空 QRectF（isNull()/isEmpty() 为真），供调用方回退默认画布。
+        """
+        rect = QRectF()
+        for stroke, item in self._items.items():
+            if stroke.eraser:
+                continue
+            rect = rect.united(item.sceneBoundingRect())
+        return rect
 
     def can_undo(self):
         # 有笔迹可逐条撤销，或刚被清空/载入覆盖的板面可整批恢复（Ctrl+Z 防误清）

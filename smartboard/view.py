@@ -121,10 +121,12 @@ class WhiteboardView(QGraphicsView):
         """缩放并平移视图，使所有笔迹内容刚好铺满视口（教学时一键总览整块板书）。
 
         仅作用于「视图变换」，不改动场景数据、笔迹、预览环与导出，因此对既有
-        书写、橡皮擦、序列化与 PNG 导出管线完全零侵入。空白板或视口尺寸无效时
-        退化为 reset_view（原点居中、缩放归 1），保持行为可预期。
+        书写、橡皮擦、序列化与 PNG 导出管线完全零侵入。无可见板书（空板，或整板
+        只剩橡皮擦）或视口尺寸无效时退化为 reset_view（原点居中、缩放归 1），
+        保持行为可预期。
         """
-        if self.scene().count() == 0 or self.viewport().rect().isEmpty():
+        if (self.scene().content_bounding_rect().isEmpty()
+                or self.viewport().rect().isEmpty()):
             self.reset_view()
             return
         rect = self.content_rect(padding)
@@ -489,15 +491,21 @@ class WhiteboardView(QGraphicsView):
 
     # -- 图片导出 --
     def content_rect(self, padding=24.0):
-        """返回刚好包围所有笔迹的内容矩形（含 padding 留白）。
+        """返回刚好包围「可见板书」的内容矩形（含 padding 留白）。
 
-        无笔迹时回退到一个默认画布，避免导出一张 4000×4000 的巨幅空白图。
+        橡皮擦以背景色覆盖擦除、本身不产生可见墨迹，因此被排除在内容边界之外：
+        否则教师在空白处随手一擦，就会把「适应内容 / 导出图片」的范围撑到那片
+        空白，板书被挤到角落。这对「导出图片」尤为关键——导出 PNG 不应凭空多出
+        大片留白。
+
+        边界口径与旧实现 itemsBoundingRect() 完全一致（同一套 Qt 场景包围盒），
+        仅多了一层「排除橡皮擦」过滤；无橡皮擦时结果逐像素相同，零侵入。
+        无可见笔迹（空板，或整板都是橡皮擦）时回退默认画布，避免导出巨幅空白图。
         """
-        if self.scene().count() == 0:
+        rect = self.scene().content_bounding_rect()
+        if rect.isNull() or rect.isEmpty():
             return QRectF(-100.0, -100.0, 200.0, 200.0)
-        return self.scene().itemsBoundingRect().adjusted(
-            -padding, -padding, padding, padding
-        )
+        return rect.adjusted(-padding, -padding, padding, padding)
 
     def export_image(self, path, fmt="PNG"):
         """将当前白板渲染为图片并保存到 path，返回是否保存成功。
