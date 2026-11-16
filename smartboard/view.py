@@ -180,6 +180,11 @@ class WhiteboardView(QGraphicsView):
         self.highlighter = on
         if on:
             self.eraser = False
+        # 关键修复：从橡皮擦切到荧光笔时 eraser 被内部置 False，但光标环可能仍是
+        # 橡皮的红色虚线样式（set_eraser 里设置的）。必须重新同步一次，否则关闭
+        # 荧光笔回到画笔后，光标环仍显示红色虚线/橡皮直径，误导落点与笔宽预判。
+        # 关闭荧光笔时也同步，使画笔实心环样式在回到画笔时即时恢复。
+        self._sync_cursor()
         self._update_cursor_visibility()
 
     def set_variable_width(self, on):
@@ -507,17 +512,30 @@ class WhiteboardView(QGraphicsView):
             return QRectF(-100.0, -100.0, 200.0, 200.0)
         return rect.adjusted(-padding, -padding, padding, padding)
 
-    def export_image(self, path, fmt="PNG"):
+    def export_image(self, path, fmt="PNG", scale=1.0):
         """将当前白板渲染为图片并保存到 path，返回是否保存成功。
 
         设计要点（均只使用 PySide6 6.2.4 已具备的 QPixmap/QPainter/Scene.render）：
         - 仅渲染「笔迹内容区域 + 留白」，而非默认 4000×4000 巨幅画布，文件体积可控；
         - 先以场景背景色填充整张图，再渲染笔迹（平滑路径），保证所见即所得；
         - 采用 IgnoreAspectRatio，规避尺寸取整带来的轻微比例偏差导致留白不均。
+
+        scale：导出分辨率倍率，1.0 为原始尺寸（与旧行为完全一致），2.0/3.0 输出
+        2×/3× 高清图。白板笔迹由 QGraphicsPathItem（矢量路径）承载，scene.render
+        会把同一路径重新光栅化到更大的 QRectF 目标上，因此高清图是「真正的矢量
+        高分辨率重绘」——边缘更平滑、非常适合投影大屏 / 课件 / 打印，而非把低
+        分辨率位图简单拉伸。scale 只影响导出像素尺寸，不触碰场景笔迹、平移缩放、
+        序列化与界面，对既有功能零侵入；非法值（<=0 / 非数值）安全回退为 1.0。
         """
+        try:
+            scale = float(scale)
+        except (TypeError, ValueError):
+            scale = 1.0
+        if scale <= 0.0:
+            scale = 1.0
         rect = self.content_rect()
-        width = max(1, int(math.ceil(rect.width())))
-        height = max(1, int(math.ceil(rect.height())))
+        width = max(1, int(math.ceil(rect.width() * scale)))
+        height = max(1, int(math.ceil(rect.height() * scale)))
 
         pixmap = QPixmap(width, height)
         bg = self.scene().backgroundBrush().color()

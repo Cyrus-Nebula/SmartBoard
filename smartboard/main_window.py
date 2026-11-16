@@ -115,6 +115,10 @@ class MainWindow(QMainWindow):
         self._add_action(tb, "保存", self._save)
         self._add_action(tb, "载入", self._load)
         self._add_action(tb, "导出图片", self._export)
+        self._export_hd_act = self._add_action(tb, "高清导出", self._export_hd)
+        self._export_hd_act.setToolTip(
+            "高清导出：以 2× 分辨率导出 PNG，矢量笔迹重新光栅化，边缘更平滑，适合投影/课件/打印"
+        )
         self._add_action(tb, "重置视图", self.board.reset_view)
         self._add_action(tb, "适应内容", self.board.fit_to_content)
 
@@ -327,16 +331,28 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "载入失败", str(e))
 
     def _export(self):
-        """将当前白板导出为 PNG 图片（供课堂分享 / 留存）。"""
+        """将当前白板导出为 PNG 图片（原始分辨率，供课堂分享 / 留存）。"""
+        self._export_with_scale(1.0, "导出白板图片")
+
+    def _export_hd(self):
+        """高清导出：以 2× 分辨率导出 PNG，矢量笔迹重新光栅化，边缘更平滑。
+
+        适合投影大屏 / 插入课件 / 打印板书。与「导出图片」共用同一路径，仅传入
+        2.0 的分辨率倍率；对笔迹数据、序列化、视图变换零侵入。
+        """
+        self._export_with_scale(2.0, "高清导出白板图片")
+
+    def _export_with_scale(self, scale, title):
+        """导出实现：scale 为分辨率倍率，1.0 即原有「导出图片」行为。"""
         path, _ = QFileDialog.getSaveFileName(
-            self, "导出白板图片", os.path.expanduser("~"), "PNG 图片 (*.png)"
+            self, title, os.path.expanduser("~"), "PNG 图片 (*.png)"
         )
         if not path:
             return
         if not path.lower().endswith(".png"):
             path += ".png"
         try:
-            ok = self.board.export_image(path, "PNG")
+            ok = self.board.export_image(path, "PNG", scale=scale)
         except Exception as e:  # noqa: BLE001 —— 捕获渲染/保存过程中的任何异常并提示
             QMessageBox.warning(self, "导出失败", str(e))
             return
