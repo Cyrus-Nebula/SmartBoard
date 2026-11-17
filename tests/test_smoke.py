@@ -12,6 +12,10 @@ import unittest
 
 # 必须在 import PySide6 之前设定 offscreen 平台
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# 自动保存草稿隔离到临时目录，避免冒烟测试污染用户 home
+os.environ.setdefault(
+    "SMARTBOARD_DRAFT_DIR", tempfile.mkdtemp(prefix="smartboard_smoke_draft_")
+)
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

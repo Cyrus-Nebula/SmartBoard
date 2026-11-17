@@ -6,7 +6,7 @@
 import json
 import os
 
-from PySide6.QtCore import Qt, QSize
+from PySide6.QtCore import Qt, QSize, QTimer
 from PySide6.QtGui import QColor, QAction, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QMainWindow, QToolBar, QPushButton, QSlider, QFileDialog, QMessageBox, QWidget, QLabel,
@@ -15,6 +15,7 @@ from PySide6.QtWidgets import (
 from .whiteboard import WhiteboardScene
 from .view import WhiteboardView
 from .ai_link import AITeacher, board_dict_to_text
+from .autosave import DraftManager, DEFAULT_INTERVAL_MS
 
 _PALETTE = ["#1A1A1A", "#E53935", "#1E88E5", "#43A047", "#FB8C00", "#8E24AA"]
 
@@ -47,6 +48,17 @@ class MainWindow(QMainWindow):
         self.board.scene().strokesChanged.connect(self._refresh_actions)
         self._refresh_color_buttons()
         self._refresh_actions()
+
+        # 草稿自动保存（崩溃恢复）：笔迹变化标记脏，定时器周期原子落盘。
+        # 完全增量：草稿写独立文件，仅复用 scene.to_dict()，不触碰任何既有功能；
+        # 无显示环境下 QTimer 不触发，因此对所有 headless 测试零影响。
+        self._drafts = DraftManager()
+        self._draft_dirty = False
+        self._draft_timer = QTimer(self)
+        self._draft_timer.setInterval(DEFAULT_INTERVAL_MS)
+        self._draft_timer.timeout.connect(self._autosave_draft)
+        self._draft_timer.start()
+        self.board.scene().strokesChanged.connect(self._mark_draft_dirty)
 
         # 视图变换（缩放 / 适应内容）时同步刷新状态栏缩放百分比；
         # transformChanged 为 Qt 5.14+ 公共信号，PySide6 6.2.4 已具备。
@@ -305,6 +317,84 @@ class MainWindow(QMainWindow):
     def _clear(self):
         self.board.scene().clear_all()
 
+    # -- 草稿自动保存 / 崩溃恢复 --
+    def _mark_draft_dirty(self):
+        """场景笔迹一旦变化即标记草稿为脏，等待下次定时/退出保存。
+
+        挂在 strokesChanged 上，因此书写、撤销、重做、精确擦除、清空、载入等所有
+        改变板面的操作都会自动覆盖，无需在各处手工埋点。
+        """
+        self._draft_dirty = True
+
+    def _autosave_draft(self):
+        """把当前板面原子写入草稿；仅在「有变化」时才写，避免无谓磁盘 IO。
+
+        空白板（含刚清空）则删除草稿，防止重启后恢复出无意义的空板/旧板书。
+        保存失败被 DraftManager 内部吞掉并返回 False，绝不影响白板主流程。
+        """
+        if not self._draft_dirty:
+            return
+        scene = self.board.scene()
+        if scene.count() > 0:
+            self._drafts.save(scene.to_dict())
+        else:
+            self._drafts.clear()
+        self._draft_dirty = False
+
+    def restore_draft(self):
+        """从草稿恢复板面（无交互，供测试与启动提示内部调用），成功返回 True。
+
+        恢复失败（草稿损坏 / 内容非法）会清除坏草稿并安全返回 False，不抛异常、
+        不改变当前板面——与「载入原子性」一致的防护口径。
+        """
+        board = self._drafts.load()
+        if board is None:
+            # 无草稿或草稿损坏/版本过期：无法恢复。顺手清理可能存在的坏草稿文件，
+            # 实现自愈，避免其长期残留（无效草稿绝不会被误恢复到板面）。
+            self._drafts.clear()
+            return False
+        try:
+            self.board.scene().load_dict(board)
+        except ValueError:
+            self._drafts.clear()
+            self._draft_dirty = False
+            return False
+        self._drafts.clear()
+        self._draft_dirty = False
+        self._update_status()
+        return True
+
+    def _prompt_restore_draft(self):
+        """启动时检测草稿并询问是否恢复（仅真实启动流程调用，headless 测试不触发）。
+
+        检测到有效草稿 -> 弹窗询问；确认则恢复，拒绝则清除草稿避免反复提示。
+        无草稿时静默返回 False，不弹任何窗口。
+        """
+        info = self._drafts.info()
+        if not info or info.get("stroke_count", 0) <= 0:
+            return False
+        when = info.get("saved_at") or "未知时间"
+        answer = QMessageBox.question(
+            self, "恢复草稿",
+            "检测到上次未保存的板书草稿（%s，%d 条笔迹）。\n是否恢复？"
+            % (when, info.get("stroke_count", 0)),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.Yes,
+        )
+        if answer == QMessageBox.Yes:
+            return self.restore_draft()
+        # 教师选择不恢复：清除草稿，避免下次启动重复打扰
+        self._drafts.clear()
+        self._draft_dirty = False
+        return False
+
+    def closeEvent(self, event):
+        """退出前补一次自动保存，覆盖「未到定时器触发就关闭窗口」的场景。"""
+        try:
+            self._autosave_draft()
+        except Exception:  # noqa: BLE001 —— 退出路径守卫，绝不让保存异常阻碍关闭
+            pass
+        super(MainWindow, self).closeEvent(event)
+
     def _save(self):
         path, _ = QFileDialog.getSaveFileName(
             self, "保存白板", os.path.expanduser("~"), "白板文件 (*.json)"
@@ -314,6 +404,9 @@ class MainWindow(QMainWindow):
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.board.scene().to_json())
+            # 手动保存成功：草稿使命完成，清除并复位脏标记（避免重复提示恢复）
+            self._drafts.clear()
+            self._draft_dirty = False
         except OSError as e:
             QMessageBox.warning(self, "保存失败", str(e))
 
@@ -327,6 +420,9 @@ class MainWindow(QMainWindow):
             with open(path, "r", encoding="utf-8") as f:
                 data = json.load(f)
             self.board.scene().load_dict(data)
+            # 载入成功后以文件为当前基线：清除草稿并复位脏标记
+            self._drafts.clear()
+            self._draft_dirty = False
         except (OSError, ValueError) as e:
             QMessageBox.warning(self, "载入失败", str(e))
 
