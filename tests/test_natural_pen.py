@@ -23,8 +23,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from PySide6.QtCore import Qt, QPointF  # noqa: E402
-from PySide6.QtGui import QColor  # noqa: E402
+from PySide6.QtCore import Qt, QPointF, QEvent  # noqa: E402
+from PySide6.QtGui import QColor, QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from smartboard.whiteboard import (  # noqa: E402
@@ -32,6 +32,7 @@ from smartboard.whiteboard import (  # noqa: E402
     WhiteboardScene,
     compute_half_widths,
     build_variable_width_path,
+    HL_ALPHA,
 )
 from smartboard.view import WhiteboardView  # noqa: E402
 from smartboard.main_window import MainWindow  # noqa: E402
@@ -244,6 +245,85 @@ class NaturalPenToggleTest(unittest.TestCase):
         self.assertEqual(len(committed._half_widths), len(committed.points))
         item = view.scene()._items[committed]
         self.assertEqual(item.pen().style(), Qt.NoPen)
+
+
+class NaturalPenInteractionTest(unittest.TestCase):
+    """端到端鼠标交互回归：覆盖自然笔预览分支（曾因 QBrush 未导入而在落笔时崩溃）。
+
+    既有用例直接构造 Stroke 调用 _commit_current，绕过了 mousePressEvent →
+    _start_preview 这条真实书写路径，因此漏掉了预览分支的 NameError。这里用
+    合成 QMouseEvent 走完整 落笔→移动→抬笔 流程，确保该特性真正可用。
+    """
+
+    @staticmethod
+    def _press(view, pos):
+        ev = QMouseEvent(QEvent.MouseButtonPress, QPointF(pos, pos),
+                         Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        view.mousePressEvent(ev)
+
+    @staticmethod
+    def _move(view, pos):
+        ev = QMouseEvent(QEvent.MouseMove, QPointF(pos, pos),
+                         Qt.NoButton, Qt.LeftButton, Qt.NoModifier)
+        view.mouseMoveEvent(ev)
+
+    @staticmethod
+    def _release(view, pos):
+        ev = QMouseEvent(QEvent.MouseButtonRelease, QPointF(pos, pos),
+                         Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+        view.mouseReleaseEvent(ev)
+
+    def test_press_creates_variable_width_preview_without_crash(self):
+        """自然笔落笔即创建填充轮廓预览（填充画刷 + 无描边），不再抛 NameError。"""
+        view = WhiteboardView()
+        view.set_variable_width(True)
+        self._press(view, 20.0)
+        self.assertIsNotNone(view._preview)
+        self.assertEqual(view._preview.pen().style(), Qt.NoPen)
+        self.assertEqual(view._preview.brush().style(), Qt.SolidPattern)
+        self.assertEqual(view._preview.brush().color().name(),
+                         QColor(view.pen_color).name())
+
+    def test_full_stroke_commits_variable_width(self):
+        """完整 落笔→移动→抬笔 流程提交一条变宽笔迹，预览随之清理。"""
+        view = WhiteboardView()
+        view.set_variable_width(True)
+        self._press(view, 20.0)
+        for x in (40.0, 60.0, 80.0, 100.0):
+            self._move(view, x)
+        self._release(view, 100.0)
+        self.assertIsNone(view._preview)
+        self.assertEqual(view.scene().count(), 1)
+        stroke = view.scene()._strokes[0]
+        self.assertTrue(stroke.uses_variable_width())
+        self.assertEqual(len(stroke._half_widths), len(stroke.points))
+        self.assertGreater(len(stroke.points), 1)
+
+    def test_highlighter_plus_natural_pen_preview(self):
+        """荧光笔 + 自然笔组合：预览半透明且与最终渲染的填充轮廓一致。"""
+        view = WhiteboardView()
+        view.set_variable_width(True)
+        view.set_highlighter(True)
+        self._press(view, 20.0)
+        self.assertIsNotNone(view._preview)
+        self.assertEqual(view._preview.brush().color().name(),
+                         QColor(view.pen_color).name())
+        self.assertAlmostEqual(view._preview.opacity(), HL_ALPHA, places=3)
+        self._release(view, 20.0)
+        self.assertEqual(view.scene().count(), 1)
+        stroke = view.scene()._strokes[0]
+        self.assertTrue(stroke.highlighter)
+        self.assertTrue(stroke.uses_variable_width())
+
+    def test_default_pen_preview_unchanged(self):
+        """默认（关闭自然笔）仍用恒定宽度 QPen 预览，零回归。"""
+        view = WhiteboardView()
+        self._press(view, 20.0)
+        self.assertIsNotNone(view._preview)
+        self.assertEqual(view._preview.pen().style(), Qt.SolidLine)
+        self._release(view, 20.0)
+        self.assertEqual(view.scene().count(), 1)
+        self.assertFalse(view.scene()._strokes[0].uses_variable_width())
 
 
 if __name__ == "__main__":
