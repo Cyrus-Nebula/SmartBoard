@@ -49,6 +49,7 @@ python main.py
 - **可见内容感知的「适应内容 / 导出图片」**：`适应内容`（`Ctrl+F`）与`导出图片`现在只根据**真实板书**计算内容边界，**橡皮擦笔迹不再撑大画面**。橡皮擦以背景色覆盖、本身不产生可见墨迹，旧实现把它计入 `itemsBoundingRect()` 后，教师在空白处随手一擦就会让板书被缩到角落、导出的 PNG 凭空多出大片留白。修复后边界口径与旧实现完全一致（同一套 Qt 场景包围盒），仅多一层「排除橡皮擦」过滤：无橡皮擦时结果逐像素相同，对既有书写/序列化零侵入；整板只剩橡皮擦（等同空白板）时自动回退默认画布 / 复位视图。
 - **书写辅助网格**：工具栏「网格」按钮（或快捷键 `G`）可叠加一层极淡的参考线，帮助教师保持书写水平、对齐图形与公式，尤其适合投影授课。网格画在场景背景层，因此视图与 PNG 导出均「所见即所得」地包含它；**默认关闭**，对既有书写、橡皮擦、序列化与导出管线零侵入。
 - **键盘快捷键**：为常用操作提供快捷键，书写过程中无需切换鼠标即可撤销/重做/清空/切换橡皮擦（见下方列表）。
+- **激光笔（演示指示点）**：工具栏「激光笔」按钮（或快捷键 `L`）开启后，一个红色发光点跟随鼠标，投影讲解时用来指示重点——讲完即消失，**不留下任何笔迹**。光点以透明 QWidget 叠加在视口上且鼠标事件穿透，因此不拦截书写 / 擦除 / 平移、不遮挡板书；它不进入场景，故**不参与序列化、撤销与 PNG 导出**（导出图片绝不会出现光点）。开启后左键仅作指示、不再落笔，并自动退出橡皮擦 / 荧光笔以避免状态歧义；右键精确擦除、中键平移仍可用。**默认关闭**，对既有书写、保存载入与导出管线零侵入。
 
 ## 键盘快捷键
 
@@ -66,6 +67,7 @@ python main.py
 | `Ctrl+F` | 适应内容（一键总览整块板书） |
 | `G` | 开关书写辅助网格 |
 | `H` | 开关荧光笔（半透明高亮笔） |
+| `L` | 开关激光笔（演示指示点，不落笔迹） |
 
 快捷键仅使用 Qt 6.2.4 已具备的 `QShortcut` / `QKeySequence` 公共 API，
 挂载于主窗口（WindowShortcut 上下文），不影响工具栏按钮与鼠标书写流程。
@@ -82,6 +84,7 @@ QT_QPA_PLATFORM=offscreen python3 tests/test_highlighter.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_content_bounds.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_hd_export.py
 QT_QPA_PLATFORM=offscreen python3 tests/test_autosave.py
+QT_QPA_PLATFORM=offscreen python3 tests/test_laser_pointer.py
 ```
 
 一键运行全部测试：
@@ -101,6 +104,7 @@ smartboard/
   whiteboard.py          核心：Stroke 数据模型、WhiteboardScene、路径平滑、速度感知变宽
   ai_link.py             AI 教学联动（可插拔：本地答疑 / 真实可用的远程后端，标准库 urllib + 优雅降级）
   autosave.py            草稿自动保存与崩溃恢复（纯逻辑：原子落盘/读取/清理/容错，兼容 Python 3.7）
+  laser.py               激光笔（演示指示点）：透明叠加层，不进场景/序列化/导出
 tests/test_smoke.py      headless 测试套件（79 项，含缩放/平移/状态栏/缩放百分比/适应内容/缩放感知书写/网格/载入原子性保护/清空可撤销）
 tests/test_ai_link.py    AI 联动单元测试（28 项：含板面感知统计 analyze_board 的量化指标 ink_length/bbox/highlighted、本地答疑增强与板面感知教学建议、远程后端真实调用的 monkeypatch 与降级验证）
 tests/test_natural_pen.py 自然笔（速度感知变宽）单元测试（20 项：速度→半宽映射单调性/取值区间、变宽轮廓构造、序列化兼容、_attach 渲染分支、PNG 导出、工具栏开关与状态栏联动；新增端到端鼠标交互回归——落笔预览/完整书写提交/荧光笔组合/默认零回归，守住 QBrush 导入缺陷）
@@ -109,6 +113,7 @@ tests/test_highlighter.py 荧光笔（高亮笔）单元测试（17 项：序列
 tests/test_content_bounds.py 可见内容边界单元测试（11 项：橡皮擦不撑大边界、全橡皮擦回退、无橡皮擦与旧口径一致、导出尺寸、适应内容复位）
 tests/test_hd_export.py   高清导出 + 荧光笔/橡皮光标环一致性测试（10 项：分辨率倍率 1×/2×/3× 尺寸、默认零回归、非法值回退、高清图含笔迹/背景、导出不改场景、主窗口入口与倍率转发、工具切换后环样式恢复）
 tests/test_autosave.py   草稿自动保存 / 崩溃恢复测试（20 项：原子落盘/读回往返/覆盖/清理、损坏 JSON/外来文件/错误版本容错、空板草稿、非 dict 入参、嵌套目录、环境变量覆盖；主窗口脏标记/定时器落盘/退出保存/空板清草稿/恢复往返/坏草稿自愈）
+tests/test_laser_pointer.py 激光笔 headless 测试（13 项：叠加层显隐/穿透/绘制像素、视图不产生笔迹与关闭后零回归、光点跟随与进出显隐、右键擦除仍可用、序列化与导出零侵入、主窗口动作/快捷键/互斥/状态栏）
 ```
 
-全量 headless 测试共 **197 项**全部通过（`QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q`）。退出阶段偶发的 `bool_dealloc` 为当前 offscreen + C 扩展环境的已知终析告警，不影响测试结果（进程退出码 0）。
+全量 headless 测试共 **210 项**全部通过（`QT_QPA_PLATFORM=offscreen python3 -m pytest tests/ -q`）。退出阶段偶发的 `bool_dealloc` 为当前 offscreen + C 扩展环境的已知终析告警，不影响测试结果（进程退出码 0）。

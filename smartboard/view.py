@@ -19,6 +19,7 @@ from .whiteboard import (
     SIMPLIFY_EPSILON,
 )
 from .pen_cursor import PenCursorOverlay, ERASER_RING_COLOR
+from .laser import LaserPointerOverlay
 
 
 class WhiteboardView(QGraphicsView):
@@ -73,6 +74,10 @@ class WhiteboardView(QGraphicsView):
         # 环直径需随视图缩放同步（见 _sync_cursor），否则放大/缩小时无法真实反映落笔粗细。
         self.pen_cursor = PenCursorOverlay(self.viewport())
         self._sync_cursor()
+
+        # 激光笔（演示指示点）：默认关闭，纯视图叠加，不产生笔迹、不进场景/导出。
+        # 挂 viewport 而非场景，天然排除在 PNG 导出与序列化之外。
+        self._laser = LaserPointerOverlay(self.viewport())
 
     # -- 画布缩放与平移（仅作用于视图变换，不触碰场景数据）--
     def zoomBy(self, factor, anchor_view=None):
@@ -191,6 +196,19 @@ class WhiteboardView(QGraphicsView):
         """开关「自然笔」速度感知变宽：开启后笔迹随书写速度变化粗细。"""
         self.variable_width = bool(on)
 
+    # -- 激光笔（演示指示点）--
+    def set_laser_mode(self, on):
+        """开关激光笔：开启后光点跟随鼠标指示重点，左键不再书写、不留笔迹。
+
+        纯视图叠加——不产生 Stroke、不进场景、不参与序列化/撤销/导出，
+        因此对既有书写、橡皮擦、保存载入与图片导出管线零侵入。默认关闭。
+        """
+        self._laser.set_active(on)
+        self._update_cursor_visibility()
+
+    def is_laser_mode(self):
+        return self._laser.is_active()
+
     # -- 书写辅助网格（委托给场景，保持视图/导出一致）--
     def set_grid_enabled(self, on):
         self.scene().set_grid_enabled(on)
@@ -199,13 +217,24 @@ class WhiteboardView(QGraphicsView):
         return self.scene().is_grid_enabled()
 
     def _update_cursor_visibility(self):
-        """在「画笔 / 橡皮擦模式（非荧光笔）+ 鼠标位于视口内」时显示预览环。
+        """按当前工具与鼠标位置决定预览环 / 激光点的显隐。
 
+        - 激光笔模式：隐藏画笔环，仅显示跟随鼠标的激光指示点（需鼠标在视口内）；
         - 画笔模式：实心环，预判落点与笔宽；
         - 橡皮擦模式：红色虚线环，直观提示「擦除范围」（橡皮本身以背景覆盖方式工作，
           实时书写时无任何视觉反馈，环弥补这一盲区）；
         - 荧光笔隐藏——其半透明叠加渲染与实心环的视觉预期不一致，隐藏避免误导。
         """
+        if self.is_laser_mode():
+            self.pen_cursor.hide()
+            if self._mouse_inside:
+                self._laser.show()
+            else:
+                self._laser.hide()
+            return
+        # 非激光笔模式：激光点必定隐藏（hide 幂等；不用 isVisible 判断——
+        # 父 viewport 未显示时子控件的 isVisible() 恒为 False，会漏隐藏）
+        self._laser.hide()
         if (not self.highlighter) and self._mouse_inside:
             self.pen_cursor.show()
         else:
@@ -257,6 +286,10 @@ class WhiteboardView(QGraphicsView):
             if not self._drawing:
                 self._erase_stroke_at(event.pos())
             return
+        if event.button() == Qt.LeftButton and self.is_laser_mode():
+            # 激光笔模式：左键只作指示，不落笔、不产生任何笔迹
+            event.accept()
+            return
         if event.button() == Qt.LeftButton:
             self._drawing = True
             pos = self.mapToScene(event.pos())
@@ -272,6 +305,8 @@ class WhiteboardView(QGraphicsView):
     def mouseMoveEvent(self, event):
         # 预览环始终跟随鼠标（即使未落笔），让落点与笔宽在下笔前可见
         self.pen_cursor.move_to(event.pos())
+        # 激光点同样跟随鼠标；未激活时 move_to 只移动一个隐藏的叠加层，无副作用
+        self._laser.move_to(event.pos())
         if self._panning:
             # 中键平移：把视口像素位移换算到场景坐标后平移视图
             delta = event.pos() - self._pan_last
@@ -296,7 +331,8 @@ class WhiteboardView(QGraphicsView):
 
     def leaveEvent(self, event):
         self._mouse_inside = False
-        self.pen_cursor.hide()
+        # 统一走显隐同步：非激光模式隐藏画笔环，激光模式同时隐藏激光点
+        self._update_cursor_visibility()
         super(WhiteboardView, self).leaveEvent(event)
 
     def mouseReleaseEvent(self, event):

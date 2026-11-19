@@ -29,7 +29,7 @@ class MainWindow(QMainWindow):
         self.board = WhiteboardView(WhiteboardScene(), self)
         self.board.setToolTip(
             "左键书写 · 右键删除笔迹 · 中键拖拽平移 · 滚轮缩放 · "
-            "E 切换橡皮擦 · Ctrl+Z 撤销"
+            "E 切换橡皮擦 · L 激光笔 · Ctrl+Z 撤销"
         )
         self.setCentralWidget(self.board)
 
@@ -150,6 +150,14 @@ class MainWindow(QMainWindow):
             "自然笔：开启后笔迹随书写速度变化粗细（慢笔粗、快笔细），模拟真实钢笔/毛笔手感"
         )
 
+        # 激光笔（演示指示点）：投影讲解时用红色光点指示重点，不留下任何笔迹
+        self._laser_act = self._add_action(tb, "激光笔", self._toggle_laser)
+        self._laser_act.setCheckable(True)
+        self._laser_act.setToolTip(
+            "激光笔：投影讲解时用红色光点指示重点，讲完即消失——不留下笔迹、"
+            "不进入导出图片；开启后左键仅作指示、不再书写（快捷键 L）"
+        )
+
         tb.addSeparator()
 
         # AI 教学联动：将当前白板内容作为上下文，向 AI 提问
@@ -177,7 +185,10 @@ class MainWindow(QMainWindow):
         因此可安全地挂在 strokesChanged 信号链路上随笔迹变化自动刷新。
         """
         scene = self.board.scene()
-        if self.board.eraser:
+        if self.board.is_laser_mode():
+            tool = "激光笔"
+            color_part = ""                      # 激光笔模式下颜色无意义，省略
+        elif self.board.eraser:
             tool = "橡皮擦"
             color_part = ""                      # 橡皮擦模式下颜色无意义，省略
         elif self.board.highlighter:
@@ -244,6 +255,7 @@ class MainWindow(QMainWindow):
         add("Ctrl+F", self.board.fit_to_content)                 # 适应内容（一键总览整块板书）
         add("G", lambda: self._toggle_grid(not self.board.is_grid_enabled()))  # 网格开关
         add("H", lambda: self._toggle_highlighter(not self.board.highlighter))  # 荧光笔开关
+        add("L", lambda: self._toggle_laser(not self.board.is_laser_mode()))  # 激光笔开关
 
     # -- 状态联动 --
     def _refresh_color_buttons(self):
@@ -312,6 +324,22 @@ class MainWindow(QMainWindow):
         """开启/关闭自然笔（速度感知变宽），并同步工具栏勾选态与状态栏。"""
         self.board.set_variable_width(checked)
         self._natural_act.setChecked(self.board.variable_width)
+        self._update_status()
+
+    def _toggle_laser(self, checked):
+        """开关激光笔：与橡皮擦/荧光笔互斥，并同步工具栏勾选态与状态栏。
+
+        激光笔模式下左键只作指示、不书写，因此主动退出橡皮擦与荧光笔，
+        避免出现「工具显示为橡皮擦却实际不擦除」的状态歧义。
+        """
+        self.board.set_laser_mode(bool(checked))
+        if self.board.is_laser_mode():
+            self.board.set_eraser(False)
+            self.board.set_highlighter(False)
+        self._laser_act.setChecked(self.board.is_laser_mode())
+        self._eraser_act.setChecked(self.board.eraser)
+        self._hl_act.setChecked(self.board.highlighter)
+        self._refresh_color_buttons()
         self._update_status()
 
     def _clear(self):
