@@ -585,3 +585,20 @@ class WhiteboardView(QGraphicsView):
         painter.end()
 
         return pixmap.save(path, fmt)
+
+    # -- SVG 矢量导出 --
+    def export_svg(self, path, padding=24.0):
+        """把当前白板导出为 SVG 矢量图并保存到 path，返回是否成功。
+
+        矢量导出复用每条笔迹的 QPainterPath（与屏幕渲染、PNG 导出同源），
+        可无限缩放不失真；橡皮擦/荧光笔/变宽笔迹的语义由 svg_export 模块统一
+        处理。本方法只读取场景数据并写文件，不改动任何笔迹、视图变换或序列化。
+        """
+        from .svg_export import scene_to_svg
+        try:
+            svg = scene_to_svg(self.scene(), padding=padding)
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(svg)
+            return True
+        except (OSError, ValueError, TypeError):
+            return False

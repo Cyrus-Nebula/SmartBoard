@@ -131,6 +131,10 @@ class MainWindow(QMainWindow):
         self._export_hd_act.setToolTip(
             "高清导出：以 2× 分辨率导出 PNG，矢量笔迹重新光栅化，边缘更平滑，适合投影/课件/打印"
         )
+        self._export_svg_act = self._add_action(tb, "导出 SVG", self._export_svg)
+        self._export_svg_act.setToolTip(
+            "导出 SVG：矢量格式，无限缩放不失真、体积小，适合插入课件/论文/网页或二次编辑"
+        )
         self._add_action(tb, "重置视图", self.board.reset_view)
         self._add_action(tb, "适应内容", self.board.fit_to_content)
 
@@ -465,6 +469,23 @@ class MainWindow(QMainWindow):
         2.0 的分辨率倍率；对笔迹数据、序列化、视图变换零侵入。
         """
         self._export_with_scale(2.0, "高清导出白板图片")
+
+    def _export_svg(self):
+        """导出 SVG 矢量图：无限缩放不失真，便于插入课件 / 论文 / 网页或二次编辑。"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出 SVG 矢量图", os.path.expanduser("~"), "SVG 矢量图 (*.svg)"
+        )
+        if not path:
+            return
+        if not path.lower().endswith(".svg"):
+            path += ".svg"
+        try:
+            ok = self.board.export_svg(path)
+        except Exception as e:  # noqa: BLE001 —— 捕获任何异常并提示，绝不影响白板主流程
+            QMessageBox.warning(self, "导出失败", str(e))
+            return
+        if not ok:
+            QMessageBox.warning(self, "导出失败", "SVG 保存失败，请检查路径与权限。")
 
     def _export_with_scale(self, scale, title):
         """导出实现：scale 为分辨率倍率，1.0 即原有「导出图片」行为。"""
