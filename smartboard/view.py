@@ -169,9 +169,14 @@ class WhiteboardView(QGraphicsView):
     def set_eraser(self, on):
         on = bool(on)
         self.eraser = on
-        # 橡皮擦与荧光笔互斥：开启橡皮擦时强制退出荧光笔模式
+        # 橡皮擦与荧光笔互斥：开启橡皮擦时强制退出荧光笔模式。
+        # 与激光笔双向互斥：开启橡皮擦（意味着用户要真正擦除）时退出激光笔，
+        # 避免出现「工具栏勾选橡皮擦、状态栏却显示激光笔、左键仍被激光拦截擦不掉」
+        # 的状态歧义——对称于开启激光笔时主动退出其他工具的逻辑。
         if on:
             self.highlighter = False
+            if self.is_laser_mode():
+                self.set_laser_mode(False)
         # 同步预览环：切换样式（橡皮红虚线 / 画笔实心）、直径与显隐
         self._sync_cursor()
         self._update_cursor_visibility()
@@ -180,11 +185,14 @@ class WhiteboardView(QGraphicsView):
         """开关「荧光笔」高亮：开启后以半透明叠加渲染，强调关键内容。
 
         与橡皮擦互斥：开启荧光笔时强制退出橡皮擦模式。
+        与激光笔双向互斥：开启荧光笔时退出激光笔，保持工具状态自洽。
         """
         on = bool(on)
         self.highlighter = on
         if on:
             self.eraser = False
+            if self.is_laser_mode():
+                self.set_laser_mode(False)
         # 关键修复：从橡皮擦切到荧光笔时 eraser 被内部置 False，但光标环可能仍是
         # 橡皮的红色虚线样式（set_eraser 里设置的）。必须重新同步一次，否则关闭
         # 荧光笔回到画笔后，光标环仍显示红色虚线/橡皮直径，误导落点与笔宽预判。

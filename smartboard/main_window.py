@@ -306,6 +306,9 @@ class MainWindow(QMainWindow):
         self._eraser_act.setChecked(self.board.eraser)
         # 橡皮擦与荧光笔互斥：开启橡皮擦时取消荧光笔勾选
         self._hl_act.setChecked(self.board.highlighter)
+        # 视图层开启橡皮擦会退出激光笔，工具栏勾选态据此同步，避免「按钮仍勾选
+        # 激光笔、实际已退出」的新不一致（与 _toggle_laser 的同步口径一致）。
+        self._laser_act.setChecked(self.board.is_laser_mode())
         # 橡皮擦激活时取消颜色高亮，关闭时恢复
         self._refresh_color_buttons()
         self._update_status()
@@ -315,6 +318,8 @@ class MainWindow(QMainWindow):
         self.board.set_highlighter(checked)
         self._hl_act.setChecked(self.board.highlighter)
         self._eraser_act.setChecked(self.board.eraser)
+        # 视图层开启荧光笔会退出激光笔，同步工具栏激光按钮勾选态。
+        self._laser_act.setChecked(self.board.is_laser_mode())
         self._refresh_color_buttons()
         self._update_status()
 

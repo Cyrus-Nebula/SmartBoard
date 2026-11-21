@@ -212,5 +212,75 @@ class LaserMainWindowTest(unittest.TestCase):
         w.close()
 
 
+class LaserToolMutualExclusionTest(unittest.TestCase):
+    """激光笔与橡皮擦/荧光笔的「双向」互斥一致性回归。
+
+    缺陷背景：开启激光笔会主动退出橡皮擦/荧光笔，但反向切换（激光→橡皮擦/
+    荧光笔）未退出激光，导致「工具栏勾选橡皮擦、状态栏却显示激光笔、左键仍被
+    激光拦截擦不掉」的状态歧义。此处覆盖反向互斥与功能生效。
+    """
+
+    def test_view_eraser_exits_laser(self):
+        view = WhiteboardView()
+        view.set_laser_mode(True)
+        self.assertTrue(view.is_laser_mode())
+        view.set_eraser(True)
+        self.assertFalse(view.is_laser_mode())
+        self.assertTrue(view.eraser)
+
+    def test_view_highlighter_exits_laser(self):
+        view = WhiteboardView()
+        view.set_laser_mode(True)
+        view.set_highlighter(True)
+        self.assertFalse(view.is_laser_mode())
+        self.assertTrue(view.highlighter)
+
+    def test_toolbar_eraser_exits_laser_and_syncs(self):
+        w = MainWindow()
+        w._toggle_laser(True)
+        w._toggle_eraser(True)
+        self.assertFalse(w.board.is_laser_mode())
+        self.assertTrue(w.board.eraser)
+        self.assertFalse(w._laser_act.isChecked())
+        self.assertTrue(w._eraser_act.isChecked())
+        self.assertIn("橡皮擦", w._status_label.text())
+        w.close()
+
+    def test_toolbar_highlighter_exits_laser_and_syncs(self):
+        w = MainWindow()
+        w._toggle_laser(True)
+        w._toggle_highlighter(True)
+        self.assertFalse(w.board.is_laser_mode())
+        self.assertTrue(w.board.highlighter)
+        self.assertFalse(w._laser_act.isChecked())
+        self.assertTrue(w._hl_act.isChecked())
+        self.assertIn("荧光笔", w._status_label.text())
+        w.close()
+
+    def test_left_click_writes_again_after_leaving_laser(self):
+        """功能性验证：激光→橡皮擦切换后左键恢复落笔（不再只作指示）。"""
+        w = MainWindow()
+        w._toggle_laser(True)
+        w._toggle_eraser(True)
+        self.assertFalse(w.board.is_laser_mode())
+        _press(w.board, 20.0)
+        _move(w.board, 40.0)
+        _release(w.board, 40.0)
+        # 橡皮擦模式下左键会产生一条 eraser 笔迹，证明左键不再被激光拦截
+        self.assertEqual(w.board.scene().count(), 1)
+        w.close()
+
+    def test_laser_still_exits_other_tools(self):
+        """零回归：原方向（激光主动退出橡皮擦/荧光笔）仍然成立。"""
+        w = MainWindow()
+        w._toggle_eraser(True)
+        w._toggle_highlighter(True)
+        w._toggle_laser(True)
+        self.assertFalse(w.board.eraser)
+        self.assertFalse(w.board.highlighter)
+        self.assertTrue(w.board.is_laser_mode())
+        w.close()
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
